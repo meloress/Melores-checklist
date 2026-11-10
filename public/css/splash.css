@@ -1,0 +1,100 @@
+/* Kirish animatsiyasi (melores_splash.html'dan ko'chirilgan) — har rol/ekran
+   uchun bitta index.html bo'lgani sabab shu yerga qo'yilishi "hamma mini
+   app"ni qamrab oladi. app.css tokenlaridan mustaqil, chunki fon markazi
+   qorong'i "brend" ekrani (light/dark ilova temasidan qat'iy nazar bir xil). */
+#melores-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse 140% 90% at 50% 38%, #1e140f 0%, #120c09 62%);
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  transition: opacity 420ms ease;
+}
+#melores-splash.gone {
+  opacity: 0;
+  pointer-events: none;
+}
+#melores-splash .mark {
+  position: relative;
+  width: min(46vw, 190px);
+  height: min(46vw, 190px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#melores-splash .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(199, 9, 9, 0.35);
+  opacity: 0;
+}
+#melores-splash .ring.pulse {
+  animation: splashPulseRing 900ms cubic-bezier(.2, .7, .3, 1) 980ms 1;
+}
+@keyframes splashPulseRing {
+  0% { opacity: .9; transform: scale(.55); box-shadow: 0 0 0 1px rgba(255,60,60,.6), 0 0 30px 4px rgba(199,9,9,.35); }
+  70% { opacity: .25; }
+  100% { opacity: 0; transform: scale(2.05); box-shadow: 0 0 0 1px rgba(199,9,9,0); }
+}
+#melores-splash .rotor { position: absolute; top: 50%; left: 50%; width: 0; height: 0; }
+#melores-splash .rotor .blade {
+  position: absolute;
+  width: min(15vw, 60px);
+  height: min(9vw, 36px);
+  background: linear-gradient(135deg, #c70909 0%, #7a0606 100%);
+  clip-path: polygon(0 0, 100% 18%, 78% 100%, 0 78%);
+  left: 50%; top: 50%;
+  transform-origin: 50% 50%;
+  opacity: 0;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,.45));
+}
+#melores-splash .r0 { transform: rotate(0deg); }
+#melores-splash .r1 { transform: rotate(120deg); }
+#melores-splash .r2 { transform: rotate(240deg); }
+#melores-splash .rotor .blade span {
+  position: absolute;
+  display: block;
+  width: 100%; height: 100%;
+  transform: translate(-50%, -132%) rotate(160deg) scale(.35);
+  opacity: 0;
+  clip-path: inherit;
+  background: inherit;
+}
+#melores-splash .assemble .blade span { animation: splashFlyIn 760ms cubic-bezier(.16,.86,.3,1.06) both; }
+#melores-splash .assemble .r0 span { animation-delay: 60ms; }
+#melores-splash .assemble .r1 span { animation-delay: 130ms; }
+#melores-splash .assemble .r2 span { animation-delay: 200ms; }
+@keyframes splashFlyIn {
+  0% { transform: translate(-50%, -132%) rotate(160deg) scale(.35); opacity: 0; }
+  62% { transform: translate(-50%, -58%) rotate(-8deg) scale(1.06); opacity: 1; }
+  100% { transform: translate(-50%, -66%) rotate(0deg) scale(1); opacity: 1; }
+}
+#melores-splash .fade-blades .blade span { animation: splashBladeFade 520ms ease-out 900ms both; }
+@keyframes splashBladeFade { 0% { opacity: 1; } 100% { opacity: .12; } }
+#melores-splash .logo-wrap {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transform: scale(.9);
+}
+#melores-splash .logo-wrap.show { animation: splashLogoIn 640ms cubic-bezier(.22,.8,.28,1) 1120ms both; }
+@keyframes splashLogoIn { 0% { opacity: 0; transform: scale(.88); } 100% { opacity: 1; transform: scale(1); } }
+#melores-splash .logo-wrap img {
+  width: 78%; height: auto; display: block;
+  filter: drop-shadow(0 4px 18px rgba(0,0,0,.5));
+}
+#melores-splash .glow-breathe { animation: splashBreathe 3.2s ease-in-out 1900ms infinite; }
+@keyframes splashBreathe {
+  0%, 100% { filter: drop-shadow(0 4px 18px rgba(0,0,0,.5)); }
+  50% { filter: drop-shadow(0 4px 26px rgba(199,9,9,.28)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #melores-splash .rotor .blade span { animation: none !important; opacity: 0 !important; }
+  #melores-splash .logo-wrap.show { animation: none; opacity: 1; transform: scale(1); }
+  #melores-splash .glow-breathe { animation: none; }
+  #melores-splash .ring.pulse { animation: none; }
+}

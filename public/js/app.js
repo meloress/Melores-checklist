@@ -1,0 +1,607 @@
+/* Melores Checklist — Telegram Mini App. Dizayn va navigatsiya Trello bot
+   Mini App'i bilan BIR XIL (css/app.css, splash, ikonka sprite'i, tab-bar,
+   stack + BackButton, MainButton — o'sha yordamchilar nusxasi). Faqat
+   ekranlar boshqa: xodim savollari, javoblar, nazoratchilar, jarima sozlamasi.
+   Trello botdagi yordamchi o'zgarsa — bu yerda ham yangilang. */
+
+const API_BASE = "/api";
+const root = document.getElementById("app");
+const tabbarRoot = document.getElementById("tabbar");
+const state = { me: null };
+const nav = { stack: [], section: null, transition: null };
+let mainButtonHandler = null;
+const ACCENT = "#4f3ff0";
+
+const ROLE_LABELS = {
+  worker: "Ishchi", brigadier: "Brigadir", supervisor: "Rahbar",
+  admin: "Admin", observer: "Kuzatuvchi", seller: "Sotuvchi",
+};
+const ROLE_ICONS = {
+  worker: "user", brigadier: "users", supervisor: "chart",
+  admin: "settings", observer: "user", seller: "briefcase",
+};
+const ERRORS = {
+  not_registered: "Siz tizimda ro'yxatdan o'tmagansiz.",
+  forbidden: "Bu panel faqat boshliq va nazoratchilar uchun.",
+  admin_only: "Faqat admin uchun.",
+  unauthorized: "Ilovani Telegram ichidan oching.",
+  text_length: "Savol matni 1–1000 belgi bo'lishi kerak.",
+  penalty_range: "Jarima 0 dan 10 gacha bo'lishi kerak.",
+  penalty: "Jarima qiymati noto'g'ri.",
+};
+
+/* Pastki tab-bar. Admin — hammasi; nazoratchi (o'ziga xodim biriktirilgan
+   har qanday xodim) — "Nazoratchilar" va sozlamasiz. */
+function tabDefs() {
+  const tabs = [
+    { key: "home", icon: icon("home"), label: "Bosh sahifa", screen: screenHome },
+    { key: "employees", icon: icon("users"), label: "Xodimlar", screen: screenEmployees },
+  ];
+  if (state.me.is_admin) tabs.push({ key: "viewers", icon: icon("chart"), label: "Nazoratchilar", screen: screenViewers });
+  tabs.push({ key: "profile", icon: icon("user"), label: "Profil", screen: screenProfile });
+  return tabs;
+}
+
+function switchTab(tabKey, screenFn) {
+  nav.section = tabKey;
+  resetTo(screenFn);
+}
+
+function renderTabBar() {
+  if (!tabbarRoot || !state.me) return;
+  const defs = tabDefs();
+  tabbarRoot.innerHTML = `
+    <nav class="tab-bar">
+      <div class="pill-bg" id="tab-pill"></div>
+      ${defs.map((d) => `
+        <button class="tab-item" data-key="${d.key}" aria-selected="${d.key === nav.section}">
+          <span class="tab-ic">${d.icon}</span><span class="tab-lbl">${esc(d.label)}</span>
+        </button>
+      `).join("")}
+    </nav>
+  `;
+  defs.forEach((d) => {
+    tabbarRoot.querySelector(`[data-key="${d.key}"]`).onclick = () => switchTab(d.key, d.screen);
+  });
+  positionTabPill();
+}
+
+function positionTabPill() {
+  const pill = tabbarRoot.querySelector("#tab-pill");
+  const active = tabbarRoot.querySelector('.tab-item[aria-selected="true"]');
+  if (!pill || !active) return;
+  pill.style.left = `${active.offsetLeft}px`;
+  pill.style.width = `${active.offsetWidth}px`;
+}
+window.addEventListener("resize", () => positionTabPill());
+
+function icon(name) {
+  return `<svg class="ic-svg"><use href="#ic-${name}"></use></svg>`;
+}
+
+function esc(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function tg() {
+  return window.Telegram && window.Telegram.WebApp;
+}
+
+function showError(message) {
+  const app = tg();
+  if (app && app.showAlert) app.showAlert(message);
+  else window.alert(message);
+}
+
+function confirmAction(message) {
+  const app = tg();
+  return new Promise((resolve) => {
+    if (app && app.showConfirm) app.showConfirm(message, resolve);
+    else resolve(window.confirm(message));
+  });
+}
+
+/* Ball rangi: Trello botdagi scoreClass/heroTone/scoreSigned bilan bir xil. */
+function scoreClass(value) {
+  return value > 0 ? "pos" : value < 0 ? "neg" : "zero";
+}
+function heroTone(value) {
+  return value > 0 ? "positive" : value < 0 ? "critical" : "";
+}
+function scoreSigned(value) {
+  return (value > 0 ? "+" : "") + String(Math.round(value * 100) / 100).replace(".", ",");
+}
+
+async function api(path, opts = {}) {
+  const app = tg();
+  const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  if (app && app.initData) headers["X-Telegram-Init-Data"] = app.initData;
+  const res = await fetch(API_BASE + path, Object.assign({}, opts, { headers }));
+  let body = null;
+  try {
+    body = await res.json();
+  } catch (e) {
+    /* bo'sh javob */
+  }
+  if (!res.ok) {
+    const code = body && body.error;
+    const error = new Error(ERRORS[code] || code || `HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  return body;
+}
+
+function setScreen(html) {
+  root.innerHTML = html;
+}
+
+function hideMainButton() {
+  const app = tg();
+  if (!app) return;
+  if (mainButtonHandler) {
+    app.MainButton.offClick(mainButtonHandler);
+    mainButtonHandler = null;
+  }
+  app.MainButton.hide();
+}
+
+function setMainButton(text, onClick, color) {
+  const app = tg();
+  if (!app) return;
+  if (mainButtonHandler) app.MainButton.offClick(mainButtonHandler);
+  // Ikki marta bosish (yoki Telegram'ning ikki marta yuborgan click'i) ikki
+  // xil yozuv yaratmasin — sinovda bir savol ikki marta saqlangan (2026-11-09).
+  let busy = false;
+  mainButtonHandler = async () => {
+    if (busy) return;
+    busy = true;
+    app.MainButton.showProgress(false);
+    try {
+      await onClick();
+    } finally {
+      busy = false;
+      app.MainButton.hideProgress();
+    }
+  };
+  app.MainButton.setText(text);
+  if (color) app.MainButton.setParams({ color });
+  app.MainButton.onClick(mainButtonHandler);
+  app.MainButton.show();
+}
+
+async function show(renderFn, ...args) {
+  nav.stack.push([renderFn, args]);
+  nav.transition = "fwd";
+  await renderCurrent();
+}
+
+async function goBack() {
+  if (nav.stack.length > 1) {
+    nav.stack.pop();
+    nav.transition = "back";
+    await renderCurrent();
+  }
+}
+
+async function resetTo(renderFn, ...args) {
+  nav.stack = [[renderFn, args]];
+  nav.transition = "fade";
+  await renderCurrent();
+}
+
+async function replaceTop(renderFn, ...args) {
+  nav.stack[nav.stack.length - 1] = [renderFn, args];
+  await renderCurrent();
+}
+
+async function renderCurrent() {
+  const app = tg();
+  if (app) {
+    if (nav.stack.length > 1) app.BackButton.show();
+    else app.BackButton.hide();
+  }
+  hideMainButton();
+  const [fn, args] = nav.stack[nav.stack.length - 1];
+  try {
+    await fn(...args);
+  } catch (e) {
+    setScreen(`<p class="error-banner">${esc(e.message || "Xatolik yuz berdi")}</p><button class="btn" id="btn-retry">Qayta urinish</button>`);
+    root.querySelector("#btn-retry").onclick = renderCurrent;
+  }
+  applyStagger();
+  animateNumbers();
+  if (nav.transition) {
+    root.classList.remove("enter-fwd", "enter-back", "enter-fade");
+    void root.offsetWidth;
+    root.classList.add("enter-" + nav.transition);
+    nav.transition = null;
+  }
+  renderTabBar();
+}
+
+const STAGGER_SELECTOR = ".nav-card, .task-card, .hero-tile, .member-card, .stat-row, " +
+  ".emp-row, .lead-card, .alert-card, .fin-card, .kpi-list-item, .settings-row, .toggle-row, .radio-row";
+function applyStagger() {
+  root.querySelectorAll(STAGGER_SELECTOR).forEach((el, i) => {
+    el.classList.add("stagger");
+    el.style.setProperty("--i", i);
+  });
+}
+
+function animateNumbers() {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  root.querySelectorAll(".hero-tile .num, .chart-head .big").forEach((el) => {
+    const m = el.textContent.match(/^([+-]?)(\d+)(.*)$/);
+    if (!m) return;
+    const [, sign, digits, suffix] = m;
+    const target = Number(digits);
+    if (!target) return;
+    const start = performance.now();
+    const dur = 650;
+    const step = (now) => {
+      const p = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = `${sign}${Math.round(target * eased)}${suffix}`;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+const loading = () => setScreen(`<p class="loading">Yuklanmoqda...</p>`);
+
+function empRowHtml(e, i) {
+  const sub = e.questions ? `${e.questions} savol · bugun ${e.answered_today}/${e.questions}` : "Savol yo'q";
+  return `
+    <button class="emp-row" data-i="${i}" data-name="${esc(e.full_name.toLowerCase())}">
+      <span class="dot-status ${e.questions && e.has_telegram ? "on" : "off"}"></span>
+      <span class="grow"><div class="name">${esc(e.full_name)}</div>
+        <div class="role">${esc(ROLE_LABELS[e.role] || e.role)} · ${esc(sub)}${e.has_telegram ? "" : " · Telegram ulanmagan"}</div></span>
+      ${e.month_penalty ? `<span class="badge warn">${scoreSigned(-e.month_penalty)}</span>` : ""}
+      <span class="chev">›</span>
+    </button>`;
+}
+
+function bindEmpRows(list) {
+  root.querySelectorAll(".emp-row").forEach((el) => {
+    el.onclick = () => show(screenEmployeeDetail, list[Number(el.dataset.i)].id);
+  });
+}
+
+function bindSearch() {
+  const input = root.querySelector("#f-search");
+  input.oninput = () => {
+    const term = input.value.trim().toLowerCase();
+    root.querySelectorAll("[data-name]").forEach((el) => {
+      el.style.display = el.dataset.name.includes(term) ? "" : "none";
+    });
+  };
+}
+
+/* ---------- Bosh sahifa ---------- */
+
+async function screenHome() {
+  loading();
+  const employees = await api("/employees");
+  const participants = employees.filter((e) => e.questions && e.has_telegram);
+  const done = participants.filter((e) => e.answered_today >= e.questions);
+  const pending = participants.filter((e) => e.answered_today < e.questions);
+  const monthPenalty = employees.reduce((s, e) => s + e.month_penalty, 0);
+  const noQuestions = employees.filter((e) => !e.questions).length;
+  const first = state.me.full_name.split(" ")[0];
+  setScreen(`
+    <p class="greet">Salom, ${esc(first)}</p>
+    <p class="greet-wave">Kunlik checklist · savollar ${state.me.start} da, jarima ${state.me.deadline} da</p>
+    <div class="hero-row">
+      <div class="hero-tile ${participants.length && done.length === participants.length ? "positive" : ""}"><span class="num">${done.length}/${participants.length}</span><span class="lbl">Bugun to'liq javob berdi</span></div>
+      <div class="hero-tile ${pending.length ? "warn" : ""}"><span class="num">${pending.length}</span><span class="lbl">Javob kutilmoqda</span></div>
+    </div>
+    <div class="hero-row">
+      <div class="hero-tile ${heroTone(-monthPenalty)}"><span class="num">${scoreSigned(-monthPenalty)}</span><span class="lbl">Shu oy checklist jarimasi</span></div>
+      <div class="hero-tile"><span class="num">${employees.length}</span><span class="lbl">Xodimlar</span></div>
+    </div>
+    ${noQuestions ? `<button class="alert-card" id="nav-noq"><span class="ic">${icon("alert")}</span><span class="grow">${noQuestions} ta xodimga hali savol yozilmagan</span><span class="chev">›</span></button>` : ""}
+    ${pending.length ? `<p class="section-lbl">Bugun javob kutilmoqda</p>${pending.map(empRowHtml).join("")}` : ""}
+  `);
+  bindEmpRows(pending);
+  const noq = root.querySelector("#nav-noq");
+  if (noq) noq.onclick = () => show(screenEmployeeList, "Savoli yo'q xodimlar", "noq");
+}
+
+/* ---------- Xodimlar ---------- */
+
+async function screenEmployees() {
+  loading();
+  const employees = await api("/employees");
+  const roles = Object.keys(ROLE_LABELS).filter((r) => employees.some((e) => e.role === r));
+  setScreen(`
+    <p class="page-title">Xodimlar (${employees.length})</p>
+    <button class="nav-card accent" id="nav-all"><span class="ic">${icon("list")}</span><span class="grow">Hammasi · qidirish</span><span class="chev">›</span></button>
+    ${roles.map((r) => `
+        <button class="nav-card" data-role="${r}">
+          <span class="ic">${icon(ROLE_ICONS[r])}</span><span class="grow">${esc(ROLE_LABELS[r])}</span><span class="badge">${employees.filter((e) => e.role === r).length}</span><span class="chev">›</span>
+        </button>
+      `).join("")}
+  `);
+  root.querySelector("#nav-all").onclick = () => show(screenEmployeeList, "Barcha xodimlar", "all");
+  root.querySelectorAll(".nav-card[data-role]").forEach((el) => {
+    el.onclick = () => show(screenEmployeeList, ROLE_LABELS[el.dataset.role], el.dataset.role);
+  });
+}
+
+/* filter: "all" | "noq" (savoli yo'q) | rol nomi.
+   ponytail: to'liq ro'yxatni olib mijozda filtrlaymiz (Trello Mini App bilan
+   bir xil naqsh) — minglab xodim bo'lsa serverga filtr qo'shiladi. */
+async function screenEmployeeList(title, filter) {
+  loading();
+  const all = await api("/employees");
+  const list = filter === "all" ? all : filter === "noq" ? all.filter((e) => !e.questions) : all.filter((e) => e.role === filter);
+  setScreen(`
+    <p class="page-title">${esc(title)} (${list.length})</p>
+    ${list.length > 8 ? `<div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>` : ""}
+    ${list.length ? list.map(empRowHtml).join("") : `<p class="empty-state">Xodim topilmadi</p>`}
+  `);
+  if (list.length > 8) bindSearch();
+  bindEmpRows(list);
+}
+
+async function screenEmployeeDetail(employeeId) {
+  loading();
+  const e = await api(`/employees/${employeeId}`);
+  const today = e.days.length && !e.days[0].closed ? e.days[0] : null;
+  const weekPenalty = e.days.reduce((s, d) => s + (d.penalty || 0), 0);
+  setScreen(`
+    <p class="page-title">${esc(e.full_name)}</p>
+    ${e.has_telegram ? "" : `<p class="error-banner">Telegram ulanmagan — savollar bormaydi.</p>`}
+    <div class="panel">
+      <div class="kv-row"><span class="k">Savollar</span><span class="v">${e.questions.length}</span></div>
+      <div class="kv-row"><span class="k">Bugun javob</span><span class="v">${today ? today.items.length : 0}/${e.questions.length}</span></div>
+      <div class="kv-row"><span class="k">Jarima (7 kun)</span><span class="v">${scoreSigned(-weekPenalty)}</span></div>
+    </div>
+    <p class="section-lbl">Savollar · har kuni ${state.me.start}</p>
+    ${e.questions.length ? e.questions.map((q, i) => `
+      <div class="fin-card" data-qid="${q.id}">
+        <div class="top"><span class="task">${i + 1}. ${esc(q.text)}</span></div>
+        <div class="member-actions">
+          <button class="q-edit">Tahrirlash</button>
+          <button class="q-del">O'chirish</button>
+        </div>
+      </div>
+    `).join("") : `<p class="empty-state">Hali savol yo'q — savol qo'shilmaguncha checklist yuborilmaydi.</p>`}
+    <p class="hint">${state.me.start} dan keyin qo'shilgan savol ertangi kundan boshlab so'raladi.</p>
+    <p class="section-lbl">Javoblar · oxirgi 7 kun</p>
+    ${e.days.length ? e.days.map(dayPanelHtml).join("") : `<p class="empty-state">Hali javob yo'q</p>`}
+  `);
+  root.querySelectorAll(".fin-card[data-qid]").forEach((card) => {
+    const q = e.questions.find((x) => x.id === Number(card.dataset.qid));
+    card.querySelector(".q-edit").onclick = () => show(screenQuestionForm, employeeId, q);
+    card.querySelector(".q-del").onclick = async () => {
+      if (!(await confirmAction("Savol o'chirilsinmi? Eski javoblar saqlanib qoladi."))) return;
+      try {
+        await api(`/questions/${q.id}`, { method: "DELETE" });
+        await replaceTop(screenEmployeeDetail, employeeId);
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+  });
+  setMainButton("➕ Savol qo'shish", () => show(screenQuestionForm, employeeId, null), ACCENT);
+}
+
+function dayPanelHtml(d) {
+  let pill;
+  if (d.closed && !d.delivered) pill = `<span class="status-pill neutral">Yetib bormagan</span>`;
+  else if (!d.closed) pill = `<span class="status-pill neutral">Davom etmoqda</span>`;
+  else if (d.penalty) pill = `<span class="status-pill critical">${d.items.length}/${d.asked} · ${scoreSigned(-d.penalty)}</span>`;
+  else pill = `<span class="status-pill positive">${d.items.length}/${d.asked} ✓</span>`;
+  return `
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="font-weight:700;font-size:14px">${esc(d.day)}</span>${pill}
+      </div>
+      ${d.items.map((it) => `
+        <div class="kv-row" style="flex-direction:column;gap:3px">
+          <span class="k">${esc(it.q)}</span>
+          <span style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(it.a)}</span>
+          <span class="hint">${esc(it.at)}</span>
+        </div>
+      `).join("")}
+    </div>`;
+}
+
+async function screenQuestionForm(employeeId, question) {
+  setScreen(`
+    <p class="page-title">${question ? "Savolni tahrirlash" : "Yangi savol"}</p>
+    <div class="field">
+      <label>Savol matni</label>
+      <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qayerda ishladingiz?">${esc(question ? question.text : "")}</textarea>
+    </div>
+    <p class="hint">Xodim har kuni ${state.me.start} da shu savolga chatda matn bilan javob beradi.</p>
+  `);
+  setMainButton("💾 Saqlash", async () => {
+    const text = root.querySelector("#f-text").value.trim();
+    if (!text) return showError("Savol matnini kiriting.");
+    try {
+      if (question) await api(`/questions/${question.id}`, { method: "PUT", body: JSON.stringify({ text }) });
+      else await api(`/employees/${employeeId}/questions`, { method: "POST", body: JSON.stringify({ text }) });
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
+}
+
+/* ---------- Nazoratchilar (faqat admin) ---------- */
+
+async function screenViewers() {
+  loading();
+  const data = await api("/viewers");
+  setScreen(`
+    <p class="page-title">Nazoratchilar (${data.viewers.length})</p>
+    <p class="page-sub">Nazoratchi faqat o'ziga biriktirilgan xodimlarning javoblarini ko'radi, savollarini tahrirlaydi va har kuni ${state.me.deadline} da yig'ma oladi. Admin hammasini ko'radi.</p>
+    ${data.viewers.length ? data.viewers.map((v, i) => `
+      <button class="emp-row" data-i="${i}">
+        <span class="dot-status on"></span>
+        <span class="grow"><div class="name">${esc(v.full_name)}</div><div class="role">${v.employee_ids.length} ta xodimni ko'radi</div></span>
+        <span class="badge">${v.employee_ids.length}</span><span class="chev">›</span>
+      </button>
+    `).join("") : `<p class="empty-state">Hali nazoratchi yo'q</p>`}
+  `);
+  root.querySelectorAll(".emp-row").forEach((el) => {
+    el.onclick = () => show(screenViewerEdit, data.viewers[Number(el.dataset.i)].id);
+  });
+  setMainButton("➕ Nazoratchi qo'shish", () => show(screenViewerPick), ACCENT);
+}
+
+async function screenViewerPick() {
+  loading();
+  const data = await api("/viewers");
+  const taken = new Set(data.viewers.map((v) => v.id));
+  const candidates = data.employees.filter((e) => !taken.has(e.id) && e.role !== "admin");
+  setScreen(`
+    <p class="page-title">Nazoratchi tanlang</p>
+    <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
+    ${candidates.map((e, i) => `
+      <button class="emp-row" data-i="${i}" data-name="${esc(e.full_name.toLowerCase())}">
+        <span class="grow"><div class="name">${esc(e.full_name)}</div><div class="role">${esc(ROLE_LABELS[e.role] || e.role)}</div></span>
+        <span class="chev">›</span>
+      </button>
+    `).join("")}
+  `);
+  bindSearch();
+  root.querySelectorAll(".emp-row").forEach((el) => {
+    el.onclick = () => replaceTop(screenViewerEdit, candidates[Number(el.dataset.i)].id);
+  });
+}
+
+async function screenViewerEdit(viewerId) {
+  loading();
+  const data = await api("/viewers");
+  const viewer = data.employees.find((e) => e.id === viewerId);
+  const current = new Set((data.viewers.find((v) => v.id === viewerId) || { employee_ids: [] }).employee_ids);
+  setScreen(`
+    <p class="page-title">${esc(viewer ? viewer.full_name : "—")}</p>
+    <p class="page-sub">Qaysi xodimlarning javoblarini ko'radi? Tanlangan: <b id="cnt">${current.size}</b></p>
+    <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
+    ${data.employees.filter((e) => e.id !== viewerId).map((e) => `
+      <label class="check-row" data-name="${esc(e.full_name.toLowerCase())}">
+        <input type="checkbox" value="${e.id}" ${current.has(e.id) ? "checked" : ""} />
+        <span class="grow">${esc(e.full_name)} <span class="hint">${esc(ROLE_LABELS[e.role] || e.role)}</span></span>
+      </label>
+    `).join("")}
+    <p class="hint">Hammasidan belgini olib saqlasangiz — nazoratchi ro'yxatdan chiqariladi.</p>
+  `);
+  bindSearch();
+  root.querySelectorAll(".check-row input").forEach((el) => {
+    el.onchange = () => { root.querySelector("#cnt").textContent = root.querySelectorAll(".check-row input:checked").length; };
+  });
+  setMainButton("💾 Saqlash", async () => {
+    const ids = [...root.querySelectorAll(".check-row input:checked")].map((i) => Number(i.value));
+    try {
+      await api(`/viewers/${viewerId}`, { method: "PUT", body: JSON.stringify({ employee_ids: ids }) });
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
+}
+
+/* ---------- Profil va sozlama ---------- */
+
+async function screenProfile() {
+  const me = state.me;
+  const initials = me.full_name.split(" ").map((w) => w[0]).slice(0, 2).join("");
+  setScreen(`
+    <p class="page-title">Profil</p>
+    <div class="profile-head">
+      <div class="avatar-circle">${esc(initials)}</div>
+      <p class="greet" style="margin:2px 0 0">${esc(me.full_name)}</p>
+      <p class="greet-wave" style="margin:0">${esc(ROLE_LABELS[me.role] || me.role)}${me.is_admin ? "" : " · nazoratchi"}</p>
+    </div>
+    <div class="panel">
+      <div class="kv-row"><span class="k">Savollar keladi</span><span class="v">${state.me.start}</span></div>
+      <div class="kv-row"><span class="k">Eslatmalar</span><span class="v">${state.me.reminders.join(" · ") || "—"}</span></div>
+      <div class="kv-row"><span class="k">Jarima va yig'ma</span><span class="v">${state.me.deadline}</span></div>
+    </div>
+    ${me.is_admin ? `
+      <p class="section-lbl">Boshqaruv</p>
+      <button class="nav-card" id="nav-settings"><span class="ic">${icon("settings")}</span><span class="grow">Sozlamalar</span><span class="chev">›</span></button>
+    ` : ""}
+  `);
+  const settingsBtn = root.querySelector("#nav-settings");
+  if (settingsBtn) settingsBtn.onclick = () => show(screenSettings);
+}
+
+async function screenSettings() {
+  loading();
+  const s = await api("/settings");
+  setScreen(`
+    <p class="page-title">Sozlamalar</p>
+    <button class="settings-row" id="row-penalty">
+      <span class="lbl">Javobsiz har bir savol uchun jarima (ball)</span><span class="val">${esc(String(s.penalty_per_question).replace(".", ","))}</span>
+    </button>
+    <p class="hint">Jarima umumiy KPI ballga yoziladi va oylik kunini suradi (asosiy tizim sozlamasi bo'yicha).</p>
+  `);
+  root.querySelector("#row-penalty").onclick = () => show(screenEditPenalty, s.penalty_per_question);
+}
+
+async function screenEditPenalty(value) {
+  setScreen(`
+    <p class="page-title">Jarima miqdori</p>
+    <div class="field">
+      <label>Javobsiz har bir savol uchun (ball)</label>
+      <input id="f-value" type="number" inputmode="decimal" min="0" max="10" step="0.05" value="${esc(value)}" />
+    </div>
+    <p class="hint">Masalan 0,2: 5 ta savoldan 3 tasiga javob berilmasa — −0,6 ball.</p>
+  `);
+  setMainButton("💾 Saqlash", async () => {
+    const raw = root.querySelector("#f-value").value.replace(",", ".");
+    try {
+      await api("/settings", { method: "PUT", body: JSON.stringify({ penalty_per_question: Number(raw) }) });
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
+}
+
+/* ---------- Bootstrap ---------- */
+
+function applyTheme(scheme) {
+  document.documentElement.setAttribute("data-theme", scheme === "dark" ? "dark" : "light");
+}
+
+async function bootstrap() {
+  const splash = window.MeloresSplash;
+  await Promise.all([_bootstrap(), splash ? splash.ready : Promise.resolve()]);
+  if (splash) splash.hide();
+}
+
+async function _bootstrap() {
+  const app = tg();
+  if (app) {
+    app.ready();
+    app.expand();
+    applyTheme(app.colorScheme);
+    app.onEvent("themeChanged", () => applyTheme(app.colorScheme));
+    app.BackButton.onClick(goBack);
+  } else {
+    applyTheme("light");
+  }
+
+  try {
+    state.me = await api("/me");
+  } catch (e) {
+    setScreen(`<p class="error-banner">${esc(e.message)}</p>${e.status === 403 ? "" : `<button class="btn" id="btn-retry">Qayta urinish</button>`}`);
+    const retry = root.querySelector("#btn-retry");
+    if (retry) retry.onclick = bootstrap;
+    return;
+  }
+  const defs = tabDefs();
+  nav.section = defs[0].key;
+  resetTo(defs[0].screen);
+}
+
+bootstrap();

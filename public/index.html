@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Melores Checklist</title>
+  <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="css/splash.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="melores-splash">
+    <div class="mark">
+      <div class="ring"></div>
+      <div class="rotor">
+        <div class="blade r0"><span></span></div>
+        <div class="blade r1"><span></span></div>
+        <div class="blade r2"><span></span></div>
+      </div>
+      <div class="logo-wrap">
+        <img class="glow-breathe" src="img/melores-logo.png" alt="Melores Mebel" />
+      </div>
+    </div>
+  </div>
+  <svg style="display:none" aria-hidden="true">
+    <defs>
+      <symbol id="ic-home" viewBox="0 0 24 24"><polyline points="4,11 12,4 20,11"/><path d="M6 10v10h12V10"/></symbol>
+      <symbol id="ic-box" viewBox="0 0 24 24"><polygon points="12,3 21,7.5 21,16.5 12,21 3,16.5 3,7.5"/><polyline points="3,7.5 12,12 21,7.5"/><line x1="12" y1="12" x2="12" y2="21"/></symbol>
+      <symbol id="ic-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></symbol>
+      <symbol id="ic-star" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9.5 16.5,14 18,21 12,17.3 6,21 7.5,14 2,9.5 9,9"/></symbol>
+      <symbol id="ic-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></symbol>
+      <symbol id="ic-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 21c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 15.2c2.9.5 5 2.5 5 5.8"/></symbol>
+      <symbol id="ic-chart" viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="20"/><rect x="6" y="12" width="3" height="8"/><rect x="11" y="7" width="3" height="13"/><rect x="16" y="15" width="3" height="5"/></symbol>
+      <symbol id="ic-briefcase" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="11" rx="2"/><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="3" y1="13" x2="21" y2="13"/></symbol>
+      <symbol id="ic-plus" viewBox="0 0 24 24"><line x1="12" y1="4" x2="12" y2="20"/><line x1="4" y1="12" x2="20" y2="12"/></symbol>
+      <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12,7 12,12 16,14"/></symbol>
+      <symbol id="ic-alert" viewBox="0 0 24 24"><path d="M12 3 22 20 2 20 Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17.3" r="0.9" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="ic-stop" viewBox="0 0 24 24"><polygon points="8,3 16,3 21,8 21,16 16,21 8,21 3,16 3,8"/></symbol>
+      <symbol id="ic-check" viewBox="0 0 24 24"><polyline points="4,13 9,18 20,6"/></symbol>
+      <symbol id="ic-x" viewBox="0 0 24 24"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></symbol>
+      <symbol id="ic-phone" viewBox="0 0 24 24"><path d="M6 3h3l2 5-2.5 1.8a12 12 0 0 0 5.7 5.7L15.7 13l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 4 6a2 2 0 0 1 2-3Z"/></symbol>
+      <symbol id="ic-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></symbol>
+      <symbol id="ic-ruler" viewBox="0 0 24 24"><path d="M3 16 3 8 21 8 21 16 Z"/><line x1="7" y1="8" x2="7" y2="11"/><line x1="11" y1="8" x2="11" y2="11"/><line x1="15" y1="8" x2="15" y2="11"/><line x1="19" y1="8" x2="19" y2="11"/></symbol>
+      <symbol id="ic-factory" viewBox="0 0 24 24"><path d="M3 21V11l5 3V11l5 3V8h8v13Z"/><line x1="3" y1="21" x2="21" y2="21"/></symbol>
+      <symbol id="ic-link" viewBox="0 0 24 24"><path d="M9 15 15 9"/><path d="M8 17H5.5a4 4 0 0 1 0-8H8"/><path d="M16 7h2.5a4 4 0 0 1 0 8H16"/></symbol>
+      <symbol id="ic-material" viewBox="0 0 24 24"><rect x="4" y="4" width="4" height="16" rx="1"/><rect x="16" y="4" width="4" height="16" rx="1"/><path d="M8 6c4 2 4 10 8 12M8 18c4-2 4-10 8-12"/></symbol>
+      <symbol id="ic-branch" viewBox="0 0 24 24"><circle cx="12" cy="4" r="2"/><line x1="12" y1="6" x2="12" y2="10"/><path d="M12 10c0 2-2 3-5 3s-5 1-5 3"/><path d="M12 10c0 2 2 3 5 3s5 1 5 3"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="19" r="2"/></symbol>
+      <symbol id="ic-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></symbol>
+      <symbol id="ic-repeat" viewBox="0 0 24 24"><path d="M4 7h11a4 4 0 0 1 4 4v1"/><polyline points="15,3 19,7 15,11"/><path d="M20 17H9a4 4 0 0 1-4-4v-1"/><polyline points="9,21 5,17 9,13"/></symbol>
+      <symbol id="ic-chair" viewBox="0 0 24 24"><path d="M6 4v9a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V4"/><line x1="6" y1="20" x2="6" y2="16"/><line x1="18" y1="20" x2="18" y2="16"/><line x1="6" y1="4" x2="18" y2="4"/></symbol>
+      <symbol id="ic-building" viewBox="0 0 24 24"><path d="M3 21V9l9-5 9 5v12"/><line x1="3" y1="21" x2="21" y2="21"/><line x1="9" y1="21" x2="9" y2="13"/><line x1="15" y1="21" x2="15" y2="13"/></symbol>
+      <symbol id="ic-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4Z"/><circle cx="12" cy="13.5" r="3.5"/></symbol>
+      <symbol id="ic-folder" viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3Z"/></symbol>
+      <symbol id="ic-inbox" viewBox="0 0 24 24"><path d="M3 13 6 4h12l3 9v7H3Z"/><path d="M3 13h5l1 3h6l1-3h5"/></symbol>
+    </defs>
+  </svg>
+  <div id="app">
+    <p class="loading">Yuklanmoqda...</p>
+  </div>
+  <div id="tabbar"></div>
+  <script src="js/splash.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
