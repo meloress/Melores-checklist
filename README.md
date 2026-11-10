@@ -1,6 +1,6 @@
 # Checklist bot
 
-Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martalik, doimiy ro'yxat emas). Savollar o'sha kuni 19:00 da yuboriladi, xodim chatda ketma-ket javob beradi. 19:30, 20:00 va 20:30 da eslatma keladi. 21:00 da har bir javobsiz savolga jarima yoziladi (standart 0.2 ball, Mini App'da o'zgartiriladi), boshliqqa (admin) va nazoratchiga yig'ma hisobot boradi. 19:00 dan keyin yozilgan savol ertaga ketadi. Savol yozilmagan xodimga hech narsa bormaydi.
+Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martalik, doimiy ro'yxat emas). Savollar o'sha kuni 19:00 da yuboriladi, xodim chatda ketma-ket javob beradi. 19:30, 20:00 va 20:30 da eslatma keladi. 21:00 da har bir javobsiz savolga jarima yoziladi (standart 0.2 ball, Mini App'da o'zgartiriladi), boshliqqa (admin) va nazoratchiga yig'ma hisobot boradi. Yig'ma bitta qisqa xabar: necha kishi to'liq javob berdi, jami jarima, kim javob bermadi. Javoblar sig'sa, shu xabarning o'zida keladi, aks holda «Javoblarni ko'rish» tugmasi Mini App'dagi kunlik javoblar ekranini ochadi. 19:00 dan keyin yozilgan savol ertaga ketadi. Savol yozilmagan xodimga hech narsa bormaydi.
 
 **Baza:** Trello botning Postgres'i ishlatiladi.
 - `employees` jadvalidan xodimlar o'qiladi.
@@ -12,6 +12,8 @@ Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martali
 - Admin hamma narsani ko'radi va sozlaydi.
 - Nazoratchi faqat admin unga biriktirgan xodimlarni ko'radi va ularning savollarini tahrirlaydi.
 - Boshqa xodimlar faqat chatdan foydalanadi (/start, /ball).
+
+**Mini App:** bitta savolni bir nechta xodimga birdaniga yozish, kunlik javoblar (kun bo'yicha) va oylik statistika (javob foizi, jarima; faqat savol yetib borgan kunlar).
 
 ## Ishga tushirish
 
