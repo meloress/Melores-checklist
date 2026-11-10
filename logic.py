@@ -49,6 +49,19 @@ def is_past_deadline(day: date, now: datetime | None = None) -> bool:
     return local_now(now) >= datetime.combine(day, DEADLINE, TZ)
 
 
+def question_day(now: datetime | None = None) -> date:
+    """Yangi savol qaysi kuni yuboriladi: boshlanishgacha — bugun, keyin — ertaga.
+    Savollar doimiy emas: rahbar kun davomida yozadi, o'sha kuni bir marta ketadi."""
+    local = local_now(now)
+    return local.date() if local.time() < WINDOW_START else local.date() + timedelta(days=1)
+
+
+def is_locked(day: date, now: datetime | None = None) -> bool:
+    """Savol yuborilgan (oyna ochilgan) — endi tahrirlab/o'chirib bo'lmaydi,
+    aks holda jarima hisobi o'zgarib qoladi."""
+    return local_now(now) >= datetime.combine(day, WINDOW_START, TZ)
+
+
 def penalty_for(unanswered: int, rate: float) -> float:
     return round(max(unanswered, 0) * rate, 2)
 
@@ -80,11 +93,20 @@ def fmt_day(day: date) -> str:
     return day.strftime("%d.%m.%Y")
 
 
-def digest_block(name: str, qa: list[tuple[str, str | None]], penalty: float, delivered: bool) -> str:
+# Yig'mada xodim holati: savollar yetdi / botni ochib keyin bloklagan (jarima
+# yoziladi) / botni hech ochmagan yoki yuborilmay qolgan (jarima yo'q — savolni ko'rmagan).
+DELIVERED, BLOCKED, NEVER_STARTED, NOT_SENT = "delivered", "blocked", "never_started", "not_sent"
+
+
+def digest_block(name: str, qa: list[tuple[str, str | None]], penalty: float, status: str) -> str:
     answered = sum(1 for _, a in qa if a)
     head = f"👤 <b>{escape(name)}</b> — {answered}/{len(qa)}"
-    if not delivered:
-        head += " ⚠️ savollar yetib bormadi (botni ochmagan yoki bloklagan)"
+    if status == NEVER_STARTED:
+        head += " ⚠️ botni hali ochmagan — savollar yetib bormadi"
+    elif status == BLOCKED:
+        head += " ⛔ botni bloklagan"
+    elif status == NOT_SENT:
+        head += " ⚠️ savollar yetib bormadi"
     elif answered == len(qa):
         head += " ✅"
     if penalty:

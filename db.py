@@ -10,7 +10,7 @@ Ikki xil jadval:
 from datetime import date, datetime
 
 from sqlalchemy import (BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric,
-                        String, Text, UniqueConstraint, func)
+                        String, Text, UniqueConstraint, func, text)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -72,6 +72,8 @@ class ChecklistQuestion(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), index=True)
+    # Savol BIR MARTALIK: shu kuni 19:00 da yuboriladi (doimiy ro'yxat emas).
+    day: Mapped[date] = mapped_column(Date, index=True)
     text: Mapped[str] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
     # O'chirish = is_active=False: eski javoblar tarixi saqlanadi.
@@ -120,6 +122,24 @@ class ChecklistDay(Base):
     answered: Mapped[int] = mapped_column(Integer, default=0)
     penalty: Mapped[float] = mapped_column(Numeric(6, 2, asdecimal=False), default=0)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Chatda hozir javob kutilayotgan savol — bot qayta ishga tushsa ham yo'qolmaydi.
+    asking_question_id: Mapped[int | None] = mapped_column(Integer)
+    # Telegram "bloklangan / chat yo'q" degan payt (yuborishga urinilgan, yetmagan).
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Yozilgan jarima (kpi_logs.id) va uni bekor qilgan admin.
+    kpi_log_id: Mapped[int | None] = mapped_column(Integer)
+    cancelled_by: Mapped[int | None] = mapped_column(Integer)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ChecklistMember(Base):
+    """Botda /start bosgan xodim. Bosgan-u keyin bloklagan = jarima yoziladi;
+    hech bosmagan = jarima yo'q (savolni ko'rmagan)."""
+
+    __tablename__ = "checklist_members"
+
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), primary_key=True)
+    started_at: Mapped[datetime] = _now_col()
 
 
 class ChecklistSettings(Base):
@@ -130,14 +150,28 @@ class ChecklistSettings(Base):
 
 
 OWN_TABLES = [m.__table__ for m in (ChecklistQuestion, ChecklistAnswer, ChecklistViewer,
-                                    ChecklistDay, ChecklistSettings)]
+                                    ChecklistDay, ChecklistSettings, ChecklistMember)]
+
+# create_all mavjud jadvalga ustun qo'shmaydi — keyin qo'shilgan ustunlar shu yerda
+# (idempotent, har ishga tushishda xavfsiz).
+_ADDED_COLUMNS = [
+    "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS day date",
+    "CREATE INDEX IF NOT EXISTS ix_checklist_questions_day ON checklist_questions (day)",
+    "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS asking_question_id integer",
+    "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS blocked_at timestamptz",
+    "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS kpi_log_id integer",
+    "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS cancelled_by integer",
+    "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS cancelled_at timestamptz",
+]
 
 
 async def init_db() -> None:
-    # ponytail: create_all faqat YANGI jadval yaratadi; birinchi ustun
-    # o'zgarishi kerak bo'lganda Alembic qo'shing (alohida version_table bilan).
+    # ponytail: ustunlar qo'lda _ADDED_COLUMNS'da; o'zgarishlar ko'paysa yoki ustun
+    # turi/nomi o'zgarishi kerak bo'lsa — Alembic (alohida version_table bilan).
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all, tables=OWN_TABLES)
+        for ddl in _ADDED_COLUMNS:
+            await conn.execute(text(ddl))
         await conn.execute(
             pg_insert(ChecklistSettings.__table__).values(id=1, penalty_per_question=0.2)
             .on_conflict_do_nothing()

@@ -3,12 +3,12 @@ sessiyasida ishlaydi; commit'ni chaqiruvchi qiladi."""
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import (AppSetting, ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings,
-                ChecklistViewer, Employee, KpiLog)
-from logic import REASON_PREFIX, month_bounds, payment_date, window_start_utc
+from db import (AppSetting, ChecklistAnswer, ChecklistDay, ChecklistMember, ChecklistQuestion,
+                ChecklistSettings, ChecklistViewer, Employee, KpiLog)
+from logic import REASON_PREFIX, month_bounds, payment_date
 
 ADMIN = "admin"
 
@@ -20,13 +20,12 @@ async def employee_by_tg(session, telegram_id: int) -> Employee | None:
 
 
 async def day_questions(session, employee_id: int, day: date) -> list[ChecklistQuestion]:
-    """Shu kun so'raladigan savollar: faol va kun oynasi (19:00) ochilishidan
-    OLDIN qo'shilgan — 20:55 da qo'shilgan savol uchun jarima yozilmasin."""
+    """Shu kunga yozilgan (bir martalik) faol savollar."""
     return list(await session.scalars(
         select(ChecklistQuestion)
         .where(ChecklistQuestion.employee_id == employee_id,
                ChecklistQuestion.is_active.is_(True),
-               ChecklistQuestion.created_at < window_start_utc(day))
+               ChecklistQuestion.day == day)
         .order_by(ChecklistQuestion.position, ChecklistQuestion.id)
     ))
 
@@ -57,12 +56,39 @@ async def save_answer(session, employee_id: int, question: ChecklistQuestion, da
     )
 
 
-async def mark_delivered(session, employee_id: int, day: date) -> None:
-    stmt = pg_insert(ChecklistDay).values(employee_id=employee_id, day=day, delivered_at=datetime.now(timezone.utc))
-    await session.execute(stmt.on_conflict_do_update(
-        constraint="uq_checklist_day",
-        set_={"delivered_at": func.coalesce(ChecklistDay.delivered_at, stmt.excluded.delivered_at)},
-    ))
+async def mark_delivered(session, employee_id: int, day: date, asking_question_id: int | None = None,
+                         set_asking: bool = False) -> None:
+    """Savol xabari yetib bordi (birinchi marta). `set_asking` — chatda hozir
+    shu savolga javob kutilyapti (None = tugadi)."""
+    stmt = pg_insert(ChecklistDay).values(employee_id=employee_id, day=day, delivered_at=datetime.now(timezone.utc),
+                                          asking_question_id=asking_question_id)
+    set_ = {"delivered_at": func.coalesce(ChecklistDay.delivered_at, stmt.excluded.delivered_at)}
+    if set_asking:
+        set_["asking_question_id"] = stmt.excluded.asking_question_id
+    await session.execute(stmt.on_conflict_do_update(constraint="uq_checklist_day", set_=set_))
+
+
+async def mark_blocked(session, employee_id: int, day: date) -> None:
+    stmt = pg_insert(ChecklistDay).values(employee_id=employee_id, day=day, blocked_at=datetime.now(timezone.utc))
+    await session.execute(stmt.on_conflict_do_update(constraint="uq_checklist_day",
+                                                     set_={"blocked_at": stmt.excluded.blocked_at}))
+
+
+async def asking(session, employee_id: int) -> ChecklistDay | None:
+    """Xodim hozir qaysi kunning qaysi savoliga javob yozyapti (eng oxirgisi)."""
+    return await session.scalar(
+        select(ChecklistDay).where(ChecklistDay.employee_id == employee_id,
+                                   ChecklistDay.asking_question_id.is_not(None))
+        .order_by(ChecklistDay.day.desc()).limit(1)
+    )
+
+
+async def add_member(session, employee_id: int) -> None:
+    await session.execute(pg_insert(ChecklistMember).values(employee_id=employee_id).on_conflict_do_nothing())
+
+
+async def member_ids(session) -> set[int]:
+    return set(await session.scalars(select(ChecklistMember.employee_id)))
 
 
 async def penalty_rate(session) -> float:
@@ -71,10 +97,9 @@ async def penalty_rate(session) -> float:
 
 
 async def participants(session, day: date) -> list[Employee]:
-    """Shu kun kamida bitta savoli bor, faol, Telegram'ga ulangan xodimlar."""
+    """Shu kunga savol yozilgan, faol, Telegram'ga ulangan xodimlar."""
     has_q = (select(ChecklistQuestion.employee_id)
-             .where(ChecklistQuestion.is_active.is_(True),
-                    ChecklistQuestion.created_at < window_start_utc(day)))
+             .where(ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day == day))
     return list(await session.scalars(
         select(Employee).where(Employee.is_active.is_(True), Employee.telegram_id.is_not(None),
                                Employee.id.in_(has_q)).order_by(Employee.full_name)
@@ -95,11 +120,29 @@ async def scope(session, employee: Employee) -> set[int] | None:
     return await viewer_ids_of(session, employee.id)
 
 
-async def write_penalty(session, employee: Employee, score: float, reason: str) -> date | None:
-    """kpi_logs'ga minus ball yozadi va oylik kunini Trello bot qoidasi bilan
-    qayta hisoblaydi (u yerda bu `update_payment_date_if_needed`)."""
-    session.add(KpiLog(employee_id=employee.id, score=-score, reason=f"{REASON_PREFIX} {reason}"))
+async def write_penalty(session, employee: Employee, score: float, reason: str) -> tuple[int, date]:
+    """kpi_logs'ga minus ball yozadi, oylik kunini qayta hisoblaydi.
+    (kpi_log id, yangi oylik kuni) qaytaradi."""
+    log = KpiLog(employee_id=employee.id, score=-score, reason=f"{REASON_PREFIX} {reason}")
+    session.add(log)
     await session.flush()
+    return log.id, await recompute_payment_date(session, employee)
+
+
+async def cancel_penalty(session, row: ChecklistDay, employee: Employee, by_employee_id: int) -> date:
+    """Jarimani bekor qiladi: kpi_logs yozuvini o'chiradi, kim bekor qilganini
+    yozadi, oylik kunini qayta hisoblaydi. `row.penalty` tarix uchun qoladi."""
+    if row.kpi_log_id:
+        await session.execute(delete(KpiLog).where(KpiLog.id == row.kpi_log_id, KpiLog.employee_id == employee.id))
+    row.kpi_log_id = None
+    row.cancelled_by, row.cancelled_at = by_employee_id, datetime.now(timezone.utc)
+    await session.flush()
+    return await recompute_payment_date(session, employee)
+
+
+async def recompute_payment_date(session, employee: Employee) -> date:
+    """Trello bot qoidasi bilan bir xil (`penalty_service.update_payment_date_if_needed`):
+    joriy oyning minus ballari yig'indisidan oylik kunini noldan hisoblaydi."""
     start, end = month_bounds(datetime.now(timezone.utc).date())
     total_minus = await session.scalar(
         select(func.coalesce(func.sum(-KpiLog.score), 0))

@@ -1,6 +1,6 @@
 # Checklist bot
 
-Har kuni 19:00 da xodimga uning shaxsiy savollari keladi, xodim chatda ketma-ket javob beradi. 19:30, 20:00 va 20:30 da eslatma yuboriladi. 21:00 da har bir javobsiz savolga jarima yoziladi (standart 0.2 ball, Mini App'da o'zgartiriladi). Shu paytda boshliqqa (admin) va nazoratchiga yig'ma hisobot boradi.
+Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martalik, doimiy ro'yxat emas). Savollar o'sha kuni 19:00 da yuboriladi, xodim chatda ketma-ket javob beradi. 19:30, 20:00 va 20:30 da eslatma keladi. 21:00 da har bir javobsiz savolga jarima yoziladi (standart 0.2 ball, Mini App'da o'zgartiriladi), boshliqqa (admin) va nazoratchiga yig'ma hisobot boradi. 19:00 dan keyin yozilgan savol ertaga ketadi. Savol yozilmagan xodimga hech narsa bormaydi.
 
 **Baza:** Trello botning Postgres'i ishlatiladi.
 - `employees` jadvalidan xodimlar o'qiladi.
@@ -31,6 +31,11 @@ python tests/test_logic.py  # bazasiz tekshiruv
 3. Settings → Networking bo'limida public domain yoqing.
 
 ## Bilish kerak
+
+- **Ikki marta jarima yo'q:** kun yopilishi `pg_advisory_xact_lock` bilan qulflangan (deploy paytida ikki nusxa bo'lsa ham).
+- **Bloklash:** botni ochib keyin bloklagan xodimga jarima yoziladi; hech ochmaganiga yozilmaydi (yig'mada ⚠️).
+- **Jarimani bekor qilish:** admin Mini App'da (xodim kartasi → tarix) — kpi_logs'dan o'chadi, oylik kuni qayta hisoblanadi.
+- **Yuborilgan savol qulflanadi:** 19:00 dan keyin uni tahrirlab/o'chirib bo'lmaydi.
 
 - **Jarima faqat savol yetib borgan bo'lsa yoziladi.** Xodim botni ochmagan yoki bloklagan bo'lsa, jarima yozilmaydi va yig'mada ⚠️ bilan ko'rinadi. Har bir xodim yangi botda bir marta /start bosishi shart.
 - **19:00 dan keyin qo'shilgan savol** ertangi kundan boshlab so'raladi.

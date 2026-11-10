@@ -9,11 +9,11 @@ from html import unescape
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from db import ChecklistDay, ChecklistViewer, Employee, async_session
-from logic import (DEADLINE_TXT, MONTHS, digest_block, fmt_ball, fmt_day, is_past_deadline, local_now,
-                   penalty_for, split_messages)
+from logic import (BLOCKED, DEADLINE_TXT, DELIVERED, MONTHS, NEVER_STARTED, NOT_SENT, digest_block, fmt_ball, fmt_day,
+                   is_past_deadline, local_now, penalty_for, split_messages)
 import service
 
 logger = logging.getLogger(__name__)
@@ -49,16 +49,17 @@ async def remind(bot: Bot) -> None:
             if done == len(questions):
                 continue
             if done == 0:
-                text = (f"📝 <b>Kunlik checklist</b>: {len(questions)} ta savol.\n"
+                text = (f"📝 <b>Bugungi savollar</b>: {len(questions)} ta.\n"
                         f"Soat {DEADLINE_TXT} gacha javob bering — javobsiz har savolga {fmt_ball(-rate)} ball.")
             else:
                 text = f"⏰ Eslatma: {done}/{len(questions)} savolga javob berdingiz. {DEADLINE_TXT} gacha tugating."
             try:
                 if await send(bot, emp.telegram_id, text, reply_markup=START_KB):
                     await service.mark_delivered(session, emp.id, day)
-                    await session.commit()
                 else:
-                    logger.info("checklist: %s ga yetib bormadi", emp.full_name)
+                    await service.mark_blocked(session, emp.id, day)
+                    logger.info("checklist: %s ga yetib bormadi (bloklagan/ochmagan)", emp.full_name)
+                await session.commit()
             except Exception:
                 logger.exception("checklist eslatma: xodim %s", emp.id)
                 await session.rollback()
@@ -70,7 +71,12 @@ async def close_day(bot: Bot, day: date) -> None:
     blocks: dict[int, str] = {}
     notices: list[tuple[int, str]] = []
     async with async_session() as session:
+        # Ikki nusxa bir vaqtda yopmasin (21:00 da deploy: eski + yangi jarayon,
+        # yoki catch_up + cron) — aks holda bitta xodimga 2 marta jarima yoziladi.
+        # Ikkinchisi birinchisi commit qilguncha kutadi, keyin hammasini "yopilgan" ko'radi.
+        await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"checklist-close:{day}"))))
         rate = await service.penalty_rate(session)
+        members = await service.member_ids(session)
         bps = await service.balls_per_day_shift(session)
         rows = {r.employee_id: r for r in await session.scalars(select(ChecklistDay).where(ChecklistDay.day == day))}
         for emp in await service.participants(session, day):
@@ -82,25 +88,35 @@ async def close_day(bot: Bot, day: date) -> None:
                 session.add(row)
             questions, answers = await service.progress(session, emp.id, day)
             answered = sum(1 for q in questions if q.id in answers)
-            delivered = row.delivered_at is not None
-            # Savollar umuman yetib bormagan bo'lsa — jarima yo'q, yig'mada ⚠️ bilan ko'rinadi.
-            penalty = penalty_for(len(questions) - answered, rate) if delivered else 0.0
+            # Yetib bordi → jarima. Yetmadi, lekin botni avval ochgan (demak keyin
+            # bloklagan) → baribir jarima, aks holda bloklab qochish mumkin. Hech
+            # ochmagan → jarima yo'q (u savolni ko'rmagan), yig'mada ⚠️.
+            if row.delivered_at is not None:
+                status = DELIVERED
+            elif emp.id not in members:
+                status = NEVER_STARTED
+            else:
+                # Telegram haqiqatan "bloklangan" degan bo'lsa — jarima; yuborishga
+                # umuman urinilmagan bo'lsa (bot o'chiq edi) — yo'q.
+                status = BLOCKED if row.blocked_at is not None else NOT_SENT
+            penalty = penalty_for(len(questions) - answered, rate) if status in (DELIVERED, BLOCKED) else 0.0
             row.asked, row.answered, row.penalty = len(questions), answered, penalty
             row.closed_at = datetime.now(timezone.utc)
+            row.asking_question_id = None
             if penalty:
-                pay_day = await service.write_penalty(
+                row.kpi_log_id, pay_day = await service.write_penalty(
                     session, emp, penalty, f"{len(questions) - answered} ta savolga javob berilmadi ({fmt_day(day)})"
                 )
                 cl, other, _ = await service.month_breakdown(session, emp.id)
                 notices.append((emp.telegram_id,
                     f"⚠️ Sizga jarima yozildi: <b>{fmt_ball(-penalty)} ball</b>\n"
-                    f"Sabab: kunlik checklistdagi {len(questions) - answered} ta savolga {DEADLINE_TXT} gacha javob berilmadi.\n"
+                    f"Sabab: {fmt_day(day)} dagi {len(questions) - answered} ta savolga {DEADLINE_TXT} gacha javob berilmadi.\n"
                     + (f"Har {bps} ball uchun oylik kuni 1 kun kechikadi.\n" if bps else "")
                     + f"\n{MONTHS[local_now().month]}: checklist {fmt_ball(-cl)}, muddat va boshqa {fmt_ball(-other)}."
                     + (f"\nOylik kuni: {fmt_day(pay_day)}" if pay_day else "")))
             blocks[emp.id] = digest_block(
                 emp.full_name, [(q.text, answers[q.id].answer_text if q.id in answers else None) for q in questions],
-                penalty, delivered,
+                penalty, status,
             )
         await session.commit()
 
@@ -131,8 +147,8 @@ async def close_day(bot: Bot, day: date) -> None:
 
 async def catch_up(bot: Bot) -> None:
     """Jarayon 21:00 da ishlamay qolgan bo'lsa (deploy/restart): yopilmagan
-    kunlarni yopadi. Faqat savol YETIB BORGAN kunlar — aks holda bot o'chiq
-    turgan kechqurun hammaga jarima yozilmasin (yetmaganlarga jarima yo'q)."""
+    kunlarni yopadi. Faqat kamida bir xabar YETIB BORGAN kunlar (checklist_days
+    qatori bor) — bot butun kechqurun o'chiq bo'lsa, hech kimga jarima yo'q."""
     async with async_session() as session:
         days = set(await session.scalars(
             select(ChecklistDay.day).where(ChecklistDay.closed_at.is_(None)).distinct()))

@@ -47,7 +47,7 @@ async def main() -> None:
     except Exception:
         logging.exception("catch_up xatosi")
 
-    await webapp.run()
+    await webapp.run(bot, me.username)
     await dp.start_polling(bot)
 
 

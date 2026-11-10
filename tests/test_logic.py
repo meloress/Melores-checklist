@@ -17,7 +17,8 @@ os.environ.update(CHECKLIST_START="19:00", CHECKLIST_DEADLINE="21:00", CHECKLIST
 
 from datetime import time  # noqa: E402
 
-from logic import (digest_block, fmt_ball, is_past_deadline, open_day, payment_date, penalty_for,  # noqa: E402
+from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, fmt_ball,  # noqa: E402
+                   is_locked, is_past_deadline, open_day, payment_date, penalty_for, question_day,
                    reminder_times, split_messages, window_start_utc)
 from webapp import verify_init_data  # noqa: E402
 
@@ -54,11 +55,22 @@ assert reminder_times(time(13, 0), time(13, 10), 5) == [time(13), time(13, 5)]
 assert fmt_ball(-0.6) == "-0,6" and fmt_ball(-1.0) == "-1" and fmt_ball(0.001) == "0"
 
 # Yig'ma: HTML escape, javobsiz savol belgilanadi, yetib bormaganlik ko'rinadi
-block = digest_block("Ali <b>", [("Bugun?", "ish <ok>"), ("Ertaga?", None)], 0.2, True)
+block = digest_block("Ali <b>", [("Bugun?", "ish <ok>"), ("Ertaga?", None)], 0.2, DELIVERED)
 assert "Ali &lt;b&gt;" in block and "ish &lt;ok&gt;" in block
 assert "1/2" in block and "javob yo" in block and "-0,2 ball" in block
-assert "yetib bormadi" in digest_block("X", [("Q", None)], 0, False)
-assert "✅" in digest_block("X", [("Q", "A")], 0, True)
+assert "ochmagan" in digest_block("X", [("Q", None)], 0, NEVER_STARTED)
+assert "bloklagan" in digest_block("X", [("Q", None)], 0.2, BLOCKED)
+assert "yetib bormadi" in digest_block("X", [("Q", None)], 0, NOT_SENT)
+assert "✅" in digest_block("X", [("Q", "A")], 0, DELIVERED)
+
+# Bir martalik savollar: 19:00 gacha yozilgani — bugungi, keyin — ertangi
+assert question_day(utc(2026, 11, 10, 13, 59)) == date(2026, 11, 10)  # 18:59
+assert question_day(utc(2026, 11, 10, 14)) == date(2026, 11, 11)  # 19:00 — endi ertaga
+assert question_day(utc(2026, 11, 10, 19, 30)) == date(2026, 11, 11)  # 00:30 ertasi — o'sha kun
+# Yuborilgan savol qulflanadi (tahrir/o'chirish jarima hisobini buzmasin)
+assert not is_locked(date(2026, 11, 10), utc(2026, 11, 10, 13, 59))
+assert is_locked(date(2026, 11, 10), utc(2026, 11, 10, 14))
+assert not is_locked(date(2026, 11, 11), utc(2026, 11, 10, 15))  # ertangi savol hali ochiq
 
 # Bo'lish: har xabar limitga sig'adi, hech narsa yo'qolmaydi
 parts = split_messages("H", ["a" * 30, "b" * 30, "c" * 30], limit=70)

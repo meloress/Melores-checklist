@@ -19,7 +19,9 @@ from sqlalchemy import delete, func, select
 from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
                 Employee, async_session)
-from logic import DEADLINE_TXT, START_TXT, local_now, reminder_times
+from jobs import send
+from logic import (DEADLINE_TXT, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
+                   reminder_times)
 import service
 
 logger = logging.getLogger(__name__)
@@ -105,12 +107,13 @@ async def me(request):
     m = request["me"]
     return web.json_response({"id": m.id, "full_name": m.full_name, "role": m.role,
                               "is_admin": m.role == service.ADMIN, "start": START_TXT, "deadline": DEADLINE_TXT,
+                              "bot_username": request.config_dict.get("bot_username", ""),
                               "reminders": [t.strftime("%H:%M") for t in reminder_times()[1:]]})
 
 
 @routes.get("/api/employees")
 async def employees(request):
-    day = local_now().date()
+    today = local_now().date()
     allowed = request["scope"]
     async with async_session() as session:
         q = select(Employee).where(Employee.is_active.is_(True)).order_by(Employee.full_name)
@@ -119,78 +122,102 @@ async def employees(request):
         emps = list(await session.scalars(q))
         counts = dict((await session.execute(
             select(ChecklistQuestion.employee_id, func.count())
-            .where(ChecklistQuestion.is_active.is_(True)).group_by(ChecklistQuestion.employee_id))).all())
+            .where(ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day == today)
+            .group_by(ChecklistQuestion.employee_id))).all())
         answered = dict((await session.execute(
             select(ChecklistAnswer.employee_id, func.count())
-            .where(ChecklistAnswer.day == day).group_by(ChecklistAnswer.employee_id))).all())
+            .where(ChecklistAnswer.day == today).group_by(ChecklistAnswer.employee_id))).all())
         month_penalty = dict((await session.execute(
             select(ChecklistDay.employee_id, func.sum(ChecklistDay.penalty))
-            .where(ChecklistDay.day >= day.replace(day=1)).group_by(ChecklistDay.employee_id))).all())
+            .where(ChecklistDay.day >= today.replace(day=1), ChecklistDay.cancelled_at.is_(None))
+            .group_by(ChecklistDay.employee_id))).all())
+        members = await service.member_ids(session)
     return web.json_response([
         {"id": e.id, "full_name": e.full_name, "role": e.role, "has_telegram": e.telegram_id is not None,
+         "started_bot": e.id in members,
          "questions": counts.get(e.id, 0), "answered_today": answered.get(e.id, 0),
          "month_penalty": round(float(month_penalty.get(e.id) or 0), 2)}
         for e in emps
     ])
 
 
+def _day_label(day, today) -> str:
+    return "bugun" if day == today else "ertaga" if day == today + timedelta(days=1) else fmt_day(day)
+
+
 @routes.get("/api/employees/{id:\\d+}")
 async def employee_detail(request):
     emp_id = int(request.match_info["id"])
     _in_scope(request, emp_id)
-    since = local_now().date() - timedelta(days=HISTORY_DAYS - 1)
+    now = local_now()
+    today, target = now.date(), question_day()
+    since = today - timedelta(days=HISTORY_DAYS - 1)
     async with async_session() as session:
         emp = await session.get(Employee, emp_id)
         if emp is None:
             raise web.HTTPNotFound()
-        questions = await session.scalars(
-            select(ChecklistQuestion).where(ChecklistQuestion.employee_id == emp_id, ChecklistQuestion.is_active.is_(True))
-            .order_by(ChecklistQuestion.position, ChecklistQuestion.id))
-        answers = await session.scalars(
-            select(ChecklistAnswer).where(ChecklistAnswer.employee_id == emp_id, ChecklistAnswer.day >= since)
-            .order_by(ChecklistAnswer.day.desc(), ChecklistAnswer.id))
+        questions = list(await session.scalars(
+            select(ChecklistQuestion).where(ChecklistQuestion.employee_id == emp_id,
+                                            ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day >= since)
+            .order_by(ChecklistQuestion.day, ChecklistQuestion.position, ChecklistQuestion.id)))
+        answers = {(a.day, a.question_id): a for a in await session.scalars(
+            select(ChecklistAnswer).where(ChecklistAnswer.employee_id == emp_id, ChecklistAnswer.day >= since))}
         day_rows = {r.day: r for r in await session.scalars(
             select(ChecklistDay).where(ChecklistDay.employee_id == emp_id, ChecklistDay.day >= since))}
-    days: dict = {}
-    for a in answers:
-        days.setdefault(a.day, []).append({"q": a.question_text, "a": a.answer_text,
-                                           "at": a.answered_at.astimezone(local_now().tzinfo).strftime("%H:%M")})
-    for d in day_rows:
-        days.setdefault(d, [])
+        started = emp_id in await service.member_ids(session)
+    by_day: dict = {}
+    for q in questions:
+        by_day.setdefault(q.day, []).append(q)
+    days = []
+    for d in sorted(set(by_day) | set(day_rows), reverse=True):
+        if not is_locked(d, now):
+            continue  # hali yuborilmagan — "navbatdagi savollar"da ko'rinadi
+        r = day_rows.get(d)
+        items = []
+        for q in by_day.get(d, []):
+            a = answers.get((d, q.id))
+            items.append({"q": q.text, "a": a.answer_text if a else None,
+                          "at": a.answered_at.astimezone(now.tzinfo).strftime("%H:%M") if a else None})
+        days.append({
+            "day_id": r.id if r else None, "day": fmt_day(d), "label": _day_label(d, today), "items": items,
+            "penalty": r.penalty if r else 0, "closed": bool(r and r.closed_at),
+            "delivered": bool(r and r.delivered_at), "blocked": bool(r and r.blocked_at and not r.delivered_at),
+            "cancelled": bool(r and r.cancelled_at),
+        })
+    queued = [{"id": q.id, "text": q.text} for q in by_day.get(target, []) if not is_locked(q.day, now)]
     return web.json_response({
         "id": emp.id, "full_name": emp.full_name, "has_telegram": emp.telegram_id is not None,
-        "questions": [{"id": q.id, "text": q.text} for q in questions],
-        "days": [{
-            "day": d.strftime("%d.%m.%Y"), "items": items,
-            "asked": day_rows[d].asked if d in day_rows else None,
-            "penalty": day_rows[d].penalty if d in day_rows else 0,
-            "delivered": d in day_rows and day_rows[d].delivered_at is not None,
-            "closed": d in day_rows and day_rows[d].closed_at is not None,
-        } for d, items in sorted(days.items(), reverse=True)],
+        "started_bot": started, "target_label": _day_label(target, today), "queued": queued, "days": days,
     })
 
 
 @routes.post("/api/employees/{id:\\d+}/questions")
 async def add_question(request):
+    """Savol keyingi 19:00 ga yoziladi: kunduzi — bugungi, kechqurun — ertangi."""
     emp_id = int(request.match_info["id"])
     _in_scope(request, emp_id)
     text = _text(await _body(request))
+    day = question_day()
     async with async_session() as session:
         if await session.get(Employee, emp_id) is None:
             raise web.HTTPNotFound()
         pos = await session.scalar(select(func.coalesce(func.max(ChecklistQuestion.position), 0))
-                                   .where(ChecklistQuestion.employee_id == emp_id))
-        q = ChecklistQuestion(employee_id=emp_id, text=text, position=pos + 1)
+                                   .where(ChecklistQuestion.employee_id == emp_id, ChecklistQuestion.day == day))
+        q = ChecklistQuestion(employee_id=emp_id, day=day, text=text, position=pos + 1)
         session.add(q)
         await session.commit()
-    return web.json_response({"id": q.id, "text": q.text})
+    return web.json_response({"id": q.id, "text": q.text, "day": fmt_day(day)})
 
 
 async def _own_question(request, session) -> ChecklistQuestion:
+    """Tahrirlanadigan savol: o'z xodimiga tegishli va hali YUBORILMAGAN —
+    yuborilgandan keyin o'zgartirish jarima hisobini buzadi."""
     q = await session.get(ChecklistQuestion, int(request.match_info["id"]))
     if q is None or not q.is_active:
         raise web.HTTPNotFound()
     _in_scope(request, q.employee_id)
+    if is_locked(q.day):
+        raise web.HTTPConflict(text='{"error":"question_sent"}', content_type="application/json")
     return q
 
 
@@ -208,8 +235,36 @@ async def edit_question(request):
 async def delete_question(request):
     async with async_session() as session:
         q = await _own_question(request, session)
-        q.is_active = False  # javoblar tarixi qolsin
+        q.is_active = False
         await session.commit()
+    return web.json_response({"ok": True})
+
+
+@routes.post("/api/days/{id:\\d+}/cancel-penalty")
+async def cancel_penalty(request):
+    """Noto'g'ri jarimani bekor qilish (kasallik, texnik nosozlik). Pul masalasi —
+    faqat admin. kpi_logs'dan o'chiriladi, oylik kuni qayta hisoblanadi, xodimga xabar."""
+    _require_admin(request)
+    me_ = request["me"]
+    async with async_session() as session:
+        row = await session.get(ChecklistDay, int(request.match_info["id"]))
+        if row is None:
+            raise web.HTTPNotFound()
+        if not row.penalty or row.cancelled_at is not None:
+            raise web.HTTPConflict(text='{"error":"nothing_to_cancel"}', content_type="application/json")
+        emp = await session.get(Employee, row.employee_id)
+        pay_day = await service.cancel_penalty(session, row, emp, me_.id)
+        await session.commit()
+    logger.info("checklist jarima bekor qilindi: xodim %s, %s, %s ball (admin %s)",
+                emp.id, row.day, row.penalty, me_.id)
+    bot = request.config_dict.get("bot")
+    if bot and emp.telegram_id:
+        try:
+            await send(bot, emp.telegram_id,
+                       f"✅ {fmt_day(row.day)} dagi checklist jarimangiz ({fmt_ball(-row.penalty)} ball) bekor qilindi.\n"
+                       f"Oylik kuni: {fmt_day(pay_day)}")
+        except Exception:
+            logger.exception("bekor qilish xabari yuborilmadi (xodim %s)", emp.id)
     return web.json_response({"ok": True})
 
 
@@ -277,16 +332,18 @@ async def _index(request):
     return web.FileResponse(PUBLIC / "index.html")
 
 
-def create_app() -> web.Application:
+def create_app(bot=None, bot_username: str = "") -> web.Application:
     app = web.Application(middlewares=[no_cache, auth])
+    app["bot"] = bot  # xodimga xabar (jarima bekor qilindi); testda None
+    app["bot_username"] = bot_username
     app.add_routes(routes)
     app.router.add_get("/", _index)  # add_static "/" ga index.html bermaydi
     app.router.add_static("/", PUBLIC, show_index=False)
     return app
 
 
-async def run() -> None:
-    runner = web.AppRunner(create_app())
+async def run(bot, bot_username: str) -> None:
+    runner = web.AppRunner(create_app(bot, bot_username))
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", settings.port).start()
     logger.info("Mini App :%s da ishlayapti", settings.port)
