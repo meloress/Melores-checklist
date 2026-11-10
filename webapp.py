@@ -316,6 +316,21 @@ async def delete_question(request):
     return web.json_response({"ok": True})
 
 
+@routes.post("/api/questions/{id:\\d+}/up")
+async def move_question_up(request):
+    """Savolni bitta yuqoriga suradi (yuborilmagan savollar ichida)."""
+    async with async_session() as session:
+        q = await _own_question(request, session)
+        qs = await service.day_questions(session, q.employee_id, q.day)
+        i = qs.index(q)
+        if i > 0:
+            qs[i - 1], qs[i] = qs[i], qs[i - 1]
+            for pos, x in enumerate(qs, 1):  # eski bir xil position'lar ham tartibga tushadi
+                x.position = pos
+            await session.commit()
+    return web.json_response({"ok": True})
+
+
 @routes.post("/api/days/{id:\\d+}/cancel-penalty")
 async def cancel_penalty(request):
     """Noto'g'ri jarimani bekor qilish (kasallik, texnik nosozlik). Pul masalasi —

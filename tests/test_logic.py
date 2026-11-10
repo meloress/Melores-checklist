@@ -17,7 +17,7 @@ os.environ.update(CHECKLIST_START="19:00", CHECKLIST_DEADLINE="21:00", CHECKLIST
 
 from datetime import time  # noqa: E402
 
-from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, digest_summary,  # noqa: E402
+from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, digest_summary, is_real_answer,  # noqa: E402
                    fmt_ball, is_locked, is_past_deadline, open_day, payment_date, penalty_for, question_day,
                    reminder_times, window_start_utc)
 from webapp import verify_init_data  # noqa: E402
@@ -101,5 +101,9 @@ try:
     raise AssertionError("eskirgan initData o'tib ketdi")
 except ValueError:
     pass
+
+# Bo'sh javob qabul qilinmaydi
+assert all(is_real_answer(t) for t in ["ha", "5", "yo'q", "Bajarildi."])
+assert not any(is_real_answer(t) for t in [".", "...", "-", " ", "👍", "?!"])
 
 print("OK")

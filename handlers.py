@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, Message
 
 from db import ChecklistQuestion, async_session
 from jobs import START_KB
-from logic import DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, local_now, open_day
+from logic import DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_real_answer, local_now, open_day
 import service
 
 router = Router()
@@ -103,6 +103,9 @@ async def on_text(message: Message) -> None:
         row = await service.asking(session, emp.id) if emp else None
         question = await session.get(ChecklistQuestion, row.asking_question_id) if row else None
         answering = question is not None and question.employee_id == emp.id
+        if answering and not is_real_answer(message.text):
+            await message.answer("Javob bo'sh — iltimos, so'z yoki raqam bilan yozing.")
+            return
         if answering:
             await service.save_answer(session, emp.id, question, row.day, message.text)
             await session.commit()

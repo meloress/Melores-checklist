@@ -423,6 +423,7 @@ async function screenEmployeeDetail(employeeId) {
       <div class="fin-card" data-qid="${q.id}">
         <div class="top"><span class="task">${i + 1}. ${esc(q.text)}</span></div>
         <div class="member-actions">
+          ${i ? `<button class="q-up">↑ Yuqoriga</button>` : ""}
           <button class="q-edit">Tahrirlash</button>
           <button class="q-del">O'chirish</button>
         </div>
@@ -435,6 +436,15 @@ async function screenEmployeeDetail(employeeId) {
   root.querySelectorAll(".fin-card[data-qid]").forEach((card) => {
     const q = e.queued.find((x) => x.id === Number(card.dataset.qid));
     card.querySelector(".q-edit").onclick = () => show(screenQuestionForm, employeeId, q, e.target_label);
+    const up = card.querySelector(".q-up");
+    if (up) up.onclick = async () => {
+      try {
+        await api(`/questions/${q.id}/up`, { method: "POST" });
+        await replaceTop(screenEmployeeDetail, employeeId);
+      } catch (err) {
+        showError(err.message);
+      }
+    };
     card.querySelector(".q-del").onclick = async () => {
       if (!(await confirmAction("Savol o'chirilsinmi?"))) return;
       try {

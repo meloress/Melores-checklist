@@ -62,6 +62,11 @@ def is_locked(day: date, now: datetime | None = None) -> bool:
     return local_now(now) >= datetime.combine(day, WINDOW_START, TZ)
 
 
+def is_real_answer(text: str) -> bool:
+    """Kamida bitta harf yoki raqam: "ha", "5" o'tadi; ".", "-", "👍" o'tmaydi."""
+    return any(c.isalnum() for c in text)
+
+
 def penalty_for(unanswered: int, rate: float) -> float:
     return round(max(unanswered, 0) * rate, 2)
 
