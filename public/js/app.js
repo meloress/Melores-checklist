@@ -30,6 +30,9 @@ const ERRORS = {
   penalty: "Jarima qiymati noto'g'ri.",
   question_sent: "Savol allaqachon yuborilgan — endi o'zgartirib bo'lmaydi.",
   nothing_to_cancel: "Bekor qiladigan jarima yo'q (yoki allaqachon bekor qilingan).",
+  employee_ids: "Kamida bitta xodimni tanlang.",
+  day: "Sana noto'g'ri.",
+  month: "Oy noto'g'ri.",
 };
 
 /* Pastki tab-bar. Admin — hammasi; nazoratchi (o'ziga xodim biriktirilgan
@@ -306,11 +309,16 @@ async function screenHome() {
       <div class="hero-tile"><span class="num">${employees.length}</span><span class="lbl">Xodimlar</span></div>
     </div>
     ${notStarted ? `<button class="alert-card" id="nav-nostart"><span class="ic">${icon("alert")}</span><span class="grow">${notStarted} ta xodim botni hali ochmagan — savollar ularga bormaydi</span><span class="chev">›</span></button>` : ""}
+    <button class="nav-card" id="nav-answers"><span class="ic">${icon("inbox")}</span><span class="grow">Kunlik javoblar</span><span class="chev">›</span></button>
+    <button class="nav-card" id="nav-stats"><span class="ic">${icon("chart")}</span><span class="grow">Oylik statistika</span><span class="chev">›</span></button>
     ${pending.length ? `<p class="section-lbl">Bugun javob kutilmoqda</p>${pending.map(empRowHtml).join("")}` : ""}
   `);
   bindEmpRows(pending);
   const ns = root.querySelector("#nav-nostart");
   if (ns) ns.onclick = () => show(screenEmployeeList, "Botni ochmaganlar", "nostart");
+  root.querySelector("#nav-answers").onclick = () => show(screenDayAnswers, null);
+  root.querySelector("#nav-stats").onclick = () => show(screenStats, null);
+  setMainButton("➕ Savol yozish", () => show(screenBulkQuestion), ACCENT);
 }
 
 /* ---------- Xodimlar ---------- */
@@ -332,6 +340,51 @@ async function screenEmployees() {
   root.querySelectorAll(".nav-card[data-role]").forEach((el) => {
     el.onclick = () => show(screenEmployeeList, ROLE_LABELS[el.dataset.role], el.dataset.role);
   });
+  setMainButton("➕ Savol yozish", () => show(screenBulkQuestion), ACCENT);
+}
+
+/* Bitta savol — bir nechta xodimga (30 sotuvchiga bir xil savolni 30 marta yozmaslik uchun). */
+async function screenBulkQuestion() {
+  loading();
+  const employees = (await api("/employees")).filter((e) => e.has_telegram);
+  setScreen(`
+    <p class="page-title">Yangi savol</p>
+    <div class="field">
+      <label>Savol matni</label>
+      <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qaysi mijozlarga qo'ng'iroq qildingiz?"></textarea>
+    </div>
+    <p class="hint">Kun davomida yozilgani bugun ${state.me.start} da, ${state.me.start} dan keyin yozilgani ertaga ${state.me.start} da yuboriladi.</p>
+    <p class="section-lbl">Kimga · tanlangan: <b id="cnt">0</b></p>
+    <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
+    <label class="check-row"><input type="checkbox" id="f-all" /><span class="grow"><b>Hammasini belgilash</b> <span class="hint">(ko'rinayotganlarni)</span></span></label>
+    ${employees.map((e) => `
+      <label class="check-row" data-name="${esc(e.full_name.toLowerCase())}">
+        <input type="checkbox" class="f-emp" value="${e.id}" />
+        <span class="grow">${esc(e.full_name)} <span class="hint">${esc(ROLE_LABELS[e.role] || e.role)}${e.started_bot ? "" : " · botni ochmagan"}</span></span>
+      </label>
+    `).join("")}
+  `);
+  bindSearch();
+  const boxes = [...root.querySelectorAll(".f-emp")];
+  const count = () => { root.querySelector("#cnt").textContent = boxes.filter((b) => b.checked).length; };
+  boxes.forEach((b) => { b.onchange = count; });
+  root.querySelector("#f-all").onchange = (ev) => {
+    boxes.forEach((b) => { if (b.closest(".check-row").style.display !== "none") b.checked = ev.target.checked; });
+    count();
+  };
+  setMainButton("💾 Saqlash", async () => {
+    const text = root.querySelector("#f-text").value.trim();
+    const ids = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+    if (!text) return showError("Savol matnini kiriting.");
+    if (!ids.length) return showError(ERRORS.employee_ids);
+    try {
+      const r = await api("/questions", { method: "POST", body: JSON.stringify({ text, employee_ids: ids }) });
+      showError(`${r.count} ta xodimga yozildi — ${r.day} ${state.me.start} da yuboriladi.`);
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
 }
 
 /* filter: "all" | "nostart" (botni ochmagan) | rol nomi.
@@ -377,7 +430,7 @@ async function screenEmployeeDetail(employeeId) {
     `).join("") : `<p class="empty-state">Savol yo'q — yozmasangiz, ${esc(e.target_label)} unga hech narsa bormaydi.</p>`}
     <p class="hint">Savollar bir martalik: ${state.me.start} da yuboriladi, keyin o'zgartirib bo'lmaydi. ${state.me.start} dan keyin yozilgani ertaga ketadi.</p>
     <p class="section-lbl">Tarix · oxirgi 7 kun</p>
-    ${e.days.length ? e.days.map(dayPanelHtml).join("") : `<p class="empty-state">Hali savol yuborilmagan</p>`}
+    ${e.days.length ? e.days.map((d) => dayPanelHtml(d)).join("") : `<p class="empty-state">Hali savol yuborilmagan</p>`}
   `);
   root.querySelectorAll(".fin-card[data-qid]").forEach((card) => {
     const q = e.queued.find((x) => x.id === Number(card.dataset.qid));
@@ -392,23 +445,108 @@ async function screenEmployeeDetail(employeeId) {
       }
     };
   });
-  root.querySelectorAll("[data-cancel]").forEach((btn) => {
-    btn.onclick = async () => {
-      if (!(await confirmAction("Jarima bekor qilinsinmi? KPI'dan o'chiriladi, oylik kuni qayta hisoblanadi, xodimga xabar boradi."))) return;
-      try {
-        await api(`/days/${btn.dataset.cancel}/cancel-penalty`, { method: "POST" });
-        await replaceTop(screenEmployeeDetail, employeeId);
-      } catch (err) {
-        showError(err.message);
-      }
-    };
-  });
+  bindCancel(() => replaceTop(screenEmployeeDetail, employeeId));
   setMainButton("➕ Savol qo'shish", () => show(screenQuestionForm, employeeId, null, e.target_label), ACCENT);
 }
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-function dayPanelHtml(d) {
+function bindCancel(rerender) {
+  root.querySelectorAll("[data-cancel]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!(await confirmAction("Jarima bekor qilinsinmi? KPI'dan o'chiriladi, oylik kuni qayta hisoblanadi, xodimga xabar boradi."))) return;
+      try {
+        await api(`/days/${btn.dataset.cancel}/cancel-penalty`, { method: "POST" });
+        await rerender();
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+  });
+}
+
+/* ---------- Kunlik javoblar (21:00 yig'ma tugmasi shu ekranni ochadi) ---------- */
+
+const isoShift = (iso, days) => {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
+async function screenDayAnswers(dayIso) {
+  loading();
+  const data = await api(`/answers${dayIso ? `?day=${dayIso}` : ""}`);
+  const done = (r) => r.items.every((it) => it.a);
+  const rows = [...data.rows].sort((a, b) => done(a) - done(b));  // javobsizlar tepada
+  const full = data.rows.filter(done).length;
+  setScreen(`
+    <p class="page-title">Javoblar</p>
+    <div class="segmented">
+      <button id="d-prev">‹ Oldingi</button>
+      <button aria-selected="true">${esc(data.label)}</button>
+      <button id="d-next" ${data.day >= data.today ? "disabled" : ""}>Keyingi ›</button>
+    </div>
+    ${rows.length ? `
+      <div class="hero-row">
+        <div class="hero-tile ${full === rows.length ? "positive" : "warn"}"><span class="num">${full}/${rows.length}</span><span class="lbl">To'liq javob berdi</span></div>
+      </div>
+      ${rows.length > 8 ? `<div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>` : ""}
+      ${rows.map((r) => `<div data-name="${esc(r.full_name.toLowerCase())}">${dayPanelHtml(r, r.full_name)}</div>`).join("")}
+    ` : `<p class="empty-state">${data.day >= data.today ? `Bugungi savollar hali yuborilmagan (${state.me.start} da ketadi)` : "Bu kuni savol yuborilmagan"}</p>`}
+  `);
+  if (rows.length > 8) bindSearch();
+  bindCancel(() => replaceTop(screenDayAnswers, data.day));
+  root.querySelector("#d-prev").onclick = () => replaceTop(screenDayAnswers, isoShift(data.day, -1));
+  const next = root.querySelector("#d-next");
+  if (data.day < data.today) next.onclick = () => replaceTop(screenDayAnswers, isoShift(data.day, 1));
+}
+
+/* ---------- Oylik statistika ---------- */
+
+const monthShift = (ym, n) => {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return d.toISOString().slice(0, 7);
+};
+const pct = (r) => (r.asked ? Math.round((r.answered / r.asked) * 100) : 100);
+
+async function screenStats(month) {
+  loading();
+  const data = await api(`/stats${month ? `?month=${month}` : ""}`);
+  const rows = [...data.rows].sort((a, b) => pct(a) - pct(b) || b.penalty - a.penalty);  // eng intizomsiz tepada
+  const asked = rows.reduce((s, r) => s + r.asked, 0);
+  const answered = rows.reduce((s, r) => s + r.answered, 0);
+  const penalty = rows.reduce((s, r) => s + r.penalty, 0);
+  setScreen(`
+    <p class="page-title">Oylik statistika</p>
+    <div class="segmented">
+      <button id="m-prev">‹</button>
+      <button aria-selected="true">${esc(data.label)}</button>
+      <button id="m-next" ${data.month >= data.current ? "disabled" : ""}>›</button>
+    </div>
+    <div class="hero-row">
+      <div class="hero-tile ${asked && answered === asked ? "positive" : asked ? "warn" : ""}"><span class="num">${asked ? Math.round((answered / asked) * 100) : 0}%</span><span class="lbl">Javob berildi (${answered}/${asked})</span></div>
+      <div class="hero-tile ${heroTone(-penalty)}"><span class="num">${scoreSigned(-penalty)}</span><span class="lbl">Jami jarima</span></div>
+    </div>
+    <p class="hint">Faqat savol yetib borgan, yopilgan (${state.me.deadline} dan keyin) kunlar. Eng past foiz tepada.</p>
+    ${rows.length ? rows.map((r, i) => `
+      <button class="emp-row" data-i="${i}">
+        <span class="grow"><div class="name">${esc(r.full_name)}</div>
+          <div class="role">${r.answered}/${r.asked} javob · ${r.days} kun</div></span>
+        <span class="badge ${pct(r) < 100 ? "warn" : ""}">${pct(r)}%</span>
+        ${r.penalty ? `<span class="badge warn">${scoreSigned(-r.penalty)}</span>` : ""}
+        <span class="chev">›</span>
+      </button>
+    `).join("") : `<p class="empty-state">Bu oyda hali ma'lumot yo'q</p>`}
+  `);
+  root.querySelectorAll(".emp-row").forEach((el) => {
+    el.onclick = () => show(screenEmployeeDetail, rows[Number(el.dataset.i)].id);
+  });
+  root.querySelector("#m-prev").onclick = () => replaceTop(screenStats, monthShift(data.month, -1));
+  if (data.month < data.current) root.querySelector("#m-next").onclick = () => replaceTop(screenStats, monthShift(data.month, 1));
+}
+
+function dayPanelHtml(d, title) {
   const answered = d.items.filter((it) => it.a).length;
   let pill;
   if (d.cancelled) pill = `<span class="status-pill neutral">Jarima bekor qilingan</span>`;
@@ -421,7 +559,7 @@ function dayPanelHtml(d) {
   return `
     <div class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span style="font-weight:700;font-size:14px">${esc(d.day)}</span>${pill}
+        <span style="font-weight:700;font-size:14px">${esc(title || d.day)}</span>${pill}
       </div>
       ${d.items.map((it) => `
         <div class="kv-row" style="flex-direction:column;gap:3px">
@@ -448,7 +586,7 @@ async function screenQuestionForm(employeeId, question, targetLabel) {
     if (!text) return showError("Savol matnini kiriting.");
     try {
       if (question) await api(`/questions/${question.id}`, { method: "PUT", body: JSON.stringify({ text }) });
-      else await api(`/employees/${employeeId}/questions`, { method: "POST", body: JSON.stringify({ text }) });
+      else await api("/questions", { method: "POST", body: JSON.stringify({ text, employee_ids: [employeeId] }) });
       await goBack();
     } catch (err) {
       showError(err.message);
@@ -624,7 +762,10 @@ async function _bootstrap() {
   }
   const defs = tabDefs();
   nav.section = defs[0].key;
-  resetTo(defs[0].screen);
+  await resetTo(defs[0].screen);
+  // 21:00 yig'madagi "Javoblarni ko'rish" tugmasi: ?screen=answers&day=YYYY-MM-DD
+  const params = new URLSearchParams(location.search);
+  if (params.get("screen") === "answers") await show(screenDayAnswers, params.get("day"));
 }
 
 bootstrap();

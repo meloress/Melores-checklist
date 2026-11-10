@@ -8,12 +8,13 @@ from html import unescape
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from sqlalchemy import func, select
 
+from config import settings
 from db import ChecklistDay, ChecklistViewer, Employee, async_session
-from logic import (BLOCKED, DEADLINE_TXT, DELIVERED, MONTHS, NEVER_STARTED, NOT_SENT, digest_block, fmt_ball, fmt_day,
-                   is_past_deadline, local_now, penalty_for, split_messages)
+from logic import (BLOCKED, DEADLINE_TXT, DELIVERED, MESSAGE_LIMIT, MONTHS, NEVER_STARTED, NOT_SENT, digest_block,
+                   digest_summary, fmt_ball, fmt_day, is_past_deadline, local_now, penalty_for)
 import service
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ async def close_day(bot: Bot, day: date) -> None:
     """Kunni yopadi: jarima → kpi_logs, xodimga xabar, rahbar/nazoratchiga yig'ma.
     Idempotent: allaqachon yopilgan xodim qayta hisoblanmaydi."""
     blocks: dict[int, str] = {}
+    summary: dict[int, tuple] = {}
     notices: list[tuple[int, str]] = []
     async with async_session() as session:
         # Ikki nusxa bir vaqtda yopmasin (21:00 da deploy: eski + yangi jarayon,
@@ -118,6 +120,7 @@ async def close_day(bot: Bot, day: date) -> None:
                 emp.full_name, [(q.text, answers[q.id].answer_text if q.id in answers else None) for q in questions],
                 penalty, status,
             )
+            summary[emp.id] = (emp.full_name, answered, len(questions), penalty, status)
         await session.commit()
 
         if not blocks:
@@ -132,16 +135,24 @@ async def close_day(bot: Bot, day: date) -> None:
     for chat_id, text in notices:
         await send(bot, chat_id, text)
 
+    # Bitta qisqa xabar (kim javob bermadi, jami jarima). Javoblar ham sig'sa —
+    # shu xabarning o'zida, aks holda Panel tugmasi (50 xodimga 15 ta xabar emas).
     header = f"📋 <b>Kunlik checklist — {fmt_day(day)}</b>"
     recipients: dict[int, list[int]] = {a.telegram_id: list(blocks) for a in admins}
     for viewer_id, employee_id in viewer_rows:
         v = viewers.get(viewer_id)
         if v and v.telegram_id not in {a.telegram_id for a in admins} and employee_id in blocks:
             recipients.setdefault(v.telegram_id, []).append(employee_id)
+    kb = None
+    if settings.miniapp_base_url:
+        url = f"{settings.miniapp_base_url.rstrip('/')}/?screen=answers&day={day.isoformat()}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📋 Javoblarni ko'rish",
+                                                                         web_app=WebAppInfo(url=url))]])
     for chat_id, emp_ids in recipients.items():
-        wanted = set(emp_ids)
-        for part in split_messages(header, [b for i, b in blocks.items() if i in wanted]):
-            await send(bot, chat_id, part)
+        wanted = [i for i in blocks if i in set(emp_ids)]
+        short = digest_summary(header, [summary[i] for i in wanted])
+        full = short + "\n\n" + "\n\n".join(blocks[i] for i in wanted)
+        await send(bot, chat_id, full if len(full) <= MESSAGE_LIMIT else short, reply_markup=kb)
     logger.info("checklist %s yopildi: %s xodim, %s jarima", day, len(blocks), len(notices))
 
 

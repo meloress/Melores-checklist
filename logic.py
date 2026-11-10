@@ -98,36 +98,44 @@ def fmt_day(day: date) -> str:
 DELIVERED, BLOCKED, NEVER_STARTED, NOT_SENT = "delivered", "blocked", "never_started", "not_sent"
 
 
+def _marks(answered: int, asked: int, penalty: float, status: str) -> str:
+    out = ""
+    if status == NEVER_STARTED:
+        out += " ⚠️ botni hali ochmagan — savollar yetib bormadi"
+    elif status == BLOCKED:
+        out += " ⛔ botni bloklagan"
+    elif status == NOT_SENT:
+        out += " ⚠️ savollar yetib bormadi"
+    elif answered == asked:
+        out += " ✅"
+    if penalty:
+        out += f" · {fmt_ball(-penalty)} ball"
+    return out
+
+
 def digest_block(name: str, qa: list[tuple[str, str | None]], penalty: float, status: str) -> str:
     answered = sum(1 for _, a in qa if a)
-    head = f"👤 <b>{escape(name)}</b> — {answered}/{len(qa)}"
-    if status == NEVER_STARTED:
-        head += " ⚠️ botni hali ochmagan — savollar yetib bormadi"
-    elif status == BLOCKED:
-        head += " ⛔ botni bloklagan"
-    elif status == NOT_SENT:
-        head += " ⚠️ savollar yetib bormadi"
-    elif answered == len(qa):
-        head += " ✅"
-    if penalty:
-        head += f" · {fmt_ball(-penalty)} ball"
-    lines = [head]
+    lines = [f"👤 <b>{escape(name)}</b> — {answered}/{len(qa)}" + _marks(answered, len(qa), penalty, status)]
     for i, (q, a) in enumerate(qa, 1):
         lines.append(f"{i}. {escape(q)}\n— {escape(a) if a else '<i>javob yo‘q</i>'}")
     return "\n".join(lines)
 
 
-def split_messages(header: str, blocks: list[str], limit: int = MESSAGE_LIMIT) -> list[str]:
-    """Bloklarni Telegram limitiga sig'adigan xabarlarga bo'ladi; bitta blok
-    limitdan uzun bo'lsa, o'zi kesiladi (javoblar 4000 belgigacha bo'lishi mumkin)."""
-    messages, current = [], header
-    for block in blocks:
-        block = block if len(block) <= limit else block[: limit - 1] + "…"
-        if len(current) + 2 + len(block) > limit:
-            messages.append(current)
-            current = block
-        else:
-            current = f"{current}\n\n{block}" if current else block
-    if current:
-        messages.append(current)
-    return messages
+SUMMARY_NAMES = 30  # undan ko'p bo'lsa "va yana N kishi" — xabar limitga sig'sin
+
+
+def digest_summary(header: str, items: list[tuple[str, int, int, float, str]]) -> str:
+    """Bitta qisqa xabar: necha kishi to'liq javob berdi, jami jarima, kim
+    javob bermadi. items: (ism, javob, savol, jarima, holat)."""
+    full = sum(1 for _, a, q, _, _ in items if a >= q)
+    total = sum(p for *_, p, _ in items)
+    lines = [header, f"✅ To'liq javob berdi: <b>{full}/{len(items)}</b>"]
+    if total:
+        lines.append(f"Jami jarima: <b>{fmt_ball(-total)} ball</b>")
+    missing = [it for it in items if it[1] < it[2]]
+    if missing:
+        lines.append("\nJavob to'liq emas:")
+        lines += [f"• {escape(n)} — {a}/{q}" + _marks(a, q, p, s) for n, a, q, p, s in missing[:SUMMARY_NAMES]]
+        if len(missing) > SUMMARY_NAMES:
+            lines.append(f"… va yana {len(missing) - SUMMARY_NAMES} kishi")
+    return "\n".join(lines)

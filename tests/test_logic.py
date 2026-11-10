@@ -17,9 +17,9 @@ os.environ.update(CHECKLIST_START="19:00", CHECKLIST_DEADLINE="21:00", CHECKLIST
 
 from datetime import time  # noqa: E402
 
-from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, fmt_ball,  # noqa: E402
-                   is_locked, is_past_deadline, open_day, payment_date, penalty_for, question_day,
-                   reminder_times, split_messages, window_start_utc)
+from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, digest_summary,  # noqa: E402
+                   fmt_ball, is_locked, is_past_deadline, open_day, payment_date, penalty_for, question_day,
+                   reminder_times, window_start_utc)
 from webapp import verify_init_data  # noqa: E402
 
 
@@ -72,11 +72,14 @@ assert not is_locked(date(2026, 11, 10), utc(2026, 11, 10, 13, 59))
 assert is_locked(date(2026, 11, 10), utc(2026, 11, 10, 14))
 assert not is_locked(date(2026, 11, 11), utc(2026, 11, 10, 15))  # ertangi savol hali ochiq
 
-# Bo'lish: har xabar limitga sig'adi, hech narsa yo'qolmaydi
-parts = split_messages("H", ["a" * 30, "b" * 30, "c" * 30], limit=70)
-assert all(len(p) <= 70 for p in parts) and len(parts) == 2
-assert "".join(parts).count("a") == 30 and parts[0].startswith("H")
-assert len(split_messages("H", ["x" * 200], limit=70)[-1]) <= 70  # uzun blok kesiladi
+# Qisqa yig'ma: to'liq javob berganlar soni, jami jarima, faqat to'liq emaslar ro'yxatda
+s = digest_summary("H", [("Ali", 2, 2, 0, DELIVERED), ("Vali <x>", 1, 3, 0.4, DELIVERED),
+                         ("Soli", 0, 1, 0, NEVER_STARTED)])
+assert s.startswith("H") and "1/3" in s.split("\n")[1] and "-0,4 ball" in s
+assert "Ali" not in s and "Vali &lt;x&gt;" in s and "ochmagan" in s
+big = digest_summary("H", [(f"X{i}", 0, 1, 0.2, DELIVERED) for i in range(100)])
+assert "yana 70 kishi" in big and len(big) < 3800  # 100 kishi ham bitta xabarga sig'adi
+assert "to'liq emas" not in digest_summary("H", [("A", 1, 1, 0, DELIVERED)])
 
 # initData imzosi (Telegram algoritmi)
 def signed(token, user_id, auth_date):

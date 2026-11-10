@@ -9,18 +9,18 @@ import hmac
 import json
 import logging
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, or_, select
 
 from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
                 Employee, async_session)
 from jobs import send
-from logic import (DEADLINE_TXT, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
+from logic import (DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
                    reminder_times)
 import service
 
@@ -145,6 +145,85 @@ def _day_label(day, today) -> str:
     return "bugun" if day == today else "ertaga" if day == today + timedelta(days=1) else fmt_day(day)
 
 
+def _day_json(d, r, questions, answer_of) -> dict:
+    """Bir xodimning bir kuni: savol-javoblar va holat (xodim kartasi va kunlik javoblar ekrani)."""
+    items = []
+    for q in questions:
+        a = answer_of(q)
+        items.append({"q": q.text, "a": a.answer_text if a else None,
+                      "at": local_now(a.answered_at).strftime("%H:%M") if a else None})
+    return {
+        "day_id": r.id if r else None, "day": fmt_day(d), "items": items,
+        "penalty": r.penalty if r else 0, "closed": bool(r and r.closed_at),
+        "delivered": bool(r and r.delivered_at), "blocked": bool(r and r.blocked_at and not r.delivered_at),
+        "cancelled": bool(r and r.cancelled_at),
+    }
+
+
+def _query_date(request, key: str, fmt_len: int):
+    raw = request.query.get(key)
+    try:
+        return None if not raw else date.fromisoformat(raw if fmt_len == 10 else raw + "-01")
+    except ValueError:
+        raise web.HTTPBadRequest(text=f'{{"error":"{key}"}}', content_type="application/json")
+
+
+@routes.get("/api/answers")
+async def day_answers(request):
+    """Bir kunda savol yuborilgan hamma xodimning javoblari (21:00 yig'ma tugmasi shu yerga ochadi)."""
+    now = local_now()
+    day = _query_date(request, "day", 10) or now.date()
+    allowed = request["scope"]
+    rows = []
+    if is_locked(day, now):
+        async with async_session() as session:
+            q = (select(ChecklistQuestion).where(ChecklistQuestion.day == day, ChecklistQuestion.is_active.is_(True))
+                 .order_by(ChecklistQuestion.position, ChecklistQuestion.id))
+            if allowed is not None:
+                q = q.where(ChecklistQuestion.employee_id.in_(allowed))
+            questions = list(await session.scalars(q))
+            emp_ids = {x.employee_id for x in questions}
+            answers = {(a.employee_id, a.question_id): a for a in await session.scalars(
+                select(ChecklistAnswer).where(ChecklistAnswer.day == day, ChecklistAnswer.employee_id.in_(emp_ids)))}
+            day_rows = {r.employee_id: r for r in await session.scalars(
+                select(ChecklistDay).where(ChecklistDay.day == day, ChecklistDay.employee_id.in_(emp_ids)))}
+            names = dict((await session.execute(
+                select(Employee.id, Employee.full_name).where(Employee.id.in_(emp_ids)))).all())
+        for emp_id in sorted(emp_ids, key=lambda i: names.get(i, "")):
+            own = [x for x in questions if x.employee_id == emp_id]
+            rows.append({"id": emp_id, "full_name": names.get(emp_id, "?"),
+                         **_day_json(day, day_rows.get(emp_id), own, lambda q, e=emp_id: answers.get((e, q.id)))})
+    return web.json_response({"day": day.isoformat(), "label": fmt_day(day), "today": now.date().isoformat(),
+                              "rows": rows})
+
+
+@routes.get("/api/stats")
+async def month_stats(request):
+    """Oylik intizom: yopilgan, savol YETIB BORGAN (yoki bloklagan) kunlar bo'yicha
+    javob foizi va jarima. Yetib bormagan kun xodim aybi emas — hisobga kirmaydi."""
+    today = local_now().date()
+    start = _query_date(request, "month", 7) or today.replace(day=1)
+    end = (start + timedelta(days=32)).replace(day=1)
+    allowed = request["scope"]
+    counted = or_(ChecklistDay.delivered_at.is_not(None), ChecklistDay.blocked_at.is_not(None))
+    async with async_session() as session:
+        q = (select(Employee.id, Employee.full_name, func.count(), func.sum(ChecklistDay.asked),
+                    func.sum(ChecklistDay.answered),
+                    func.sum(case((ChecklistDay.cancelled_at.is_(None), ChecklistDay.penalty), else_=0)))
+             .join(Employee, Employee.id == ChecklistDay.employee_id)
+             .where(ChecklistDay.day >= start, ChecklistDay.day < end, ChecklistDay.closed_at.is_not(None), counted)
+             .group_by(Employee.id, Employee.full_name))
+        if allowed is not None:
+            q = q.where(ChecklistDay.employee_id.in_(allowed))
+        rows = (await session.execute(q)).all()
+    return web.json_response({
+        "month": start.strftime("%Y-%m"), "label": f"{MONTHS[start.month]} {start.year}",
+        "current": today.strftime("%Y-%m"),
+        "rows": [{"id": i, "full_name": n, "days": d, "asked": int(a or 0), "answered": int(b or 0),
+                  "penalty": round(float(p or 0), 2)} for i, n, d, a, b, p in rows],
+    })
+
+
 @routes.get("/api/employees/{id:\\d+}")
 async def employee_detail(request):
     emp_id = int(request.match_info["id"])
@@ -168,22 +247,9 @@ async def employee_detail(request):
     by_day: dict = {}
     for q in questions:
         by_day.setdefault(q.day, []).append(q)
-    days = []
-    for d in sorted(set(by_day) | set(day_rows), reverse=True):
-        if not is_locked(d, now):
-            continue  # hali yuborilmagan — "navbatdagi savollar"da ko'rinadi
-        r = day_rows.get(d)
-        items = []
-        for q in by_day.get(d, []):
-            a = answers.get((d, q.id))
-            items.append({"q": q.text, "a": a.answer_text if a else None,
-                          "at": a.answered_at.astimezone(now.tzinfo).strftime("%H:%M") if a else None})
-        days.append({
-            "day_id": r.id if r else None, "day": fmt_day(d), "label": _day_label(d, today), "items": items,
-            "penalty": r.penalty if r else 0, "closed": bool(r and r.closed_at),
-            "delivered": bool(r and r.delivered_at), "blocked": bool(r and r.blocked_at and not r.delivered_at),
-            "cancelled": bool(r and r.cancelled_at),
-        })
+    days = [_day_json(d, day_rows.get(d), by_day.get(d, []), lambda q, d=d: answers.get((d, q.id)))
+            for d in sorted(set(by_day) | set(day_rows), reverse=True)
+            if is_locked(d, now)]  # hali yuborilmagani "navbatdagi savollar"da
     queued = [{"id": q.id, "text": q.text} for q in by_day.get(target, []) if not is_locked(q.day, now)]
     return web.json_response({
         "id": emp.id, "full_name": emp.full_name, "has_telegram": emp.telegram_id is not None,
@@ -191,22 +257,32 @@ async def employee_detail(request):
     })
 
 
-@routes.post("/api/employees/{id:\\d+}/questions")
+@routes.post("/api/questions")
 async def add_question(request):
-    """Savol keyingi 19:00 ga yoziladi: kunduzi — bugungi, kechqurun — ertangi."""
-    emp_id = int(request.match_info["id"])
-    _in_scope(request, emp_id)
-    text = _text(await _body(request))
+    """Bitta savol bir yoki bir nechta xodimga. Keyingi 19:00 ga yoziladi:
+    kunduzi — bugungi, kechqurun — ertangi."""
+    data = await _body(request)
+    text = _text(data)
+    ids = data.get("employee_ids")
+    if not isinstance(ids, list) or not ids or len(ids) > 1000 or not all(isinstance(i, int) for i in ids):
+        raise web.HTTPBadRequest(text='{"error":"employee_ids"}', content_type="application/json")
+    for i in ids:
+        _in_scope(request, i)
     day = question_day()
     async with async_session() as session:
-        if await session.get(Employee, emp_id) is None:
+        valid = set(await session.scalars(select(Employee.id).where(Employee.id.in_(ids),
+                                                                     Employee.is_active.is_(True))))
+        if not valid:
             raise web.HTTPNotFound()
-        pos = await session.scalar(select(func.coalesce(func.max(ChecklistQuestion.position), 0))
-                                   .where(ChecklistQuestion.employee_id == emp_id, ChecklistQuestion.day == day))
-        q = ChecklistQuestion(employee_id=emp_id, day=day, text=text, position=pos + 1)
-        session.add(q)
+        last = dict((await session.execute(
+            select(ChecklistQuestion.employee_id, func.max(ChecklistQuestion.position))
+            .where(ChecklistQuestion.employee_id.in_(valid), ChecklistQuestion.day == day)
+            .group_by(ChecklistQuestion.employee_id))).all())
+        session.add_all(ChecklistQuestion(employee_id=e, day=day, text=text, position=(last.get(e) or 0) + 1)
+                        for e in valid)
         await session.commit()
-    return web.json_response({"id": q.id, "text": q.text, "day": fmt_day(day)})
+    logger.info("checklist savol %s xodimga, %s (xodim %s)", len(valid), day, request["me"].id)
+    return web.json_response({"count": len(valid), "day": fmt_day(day)})
 
 
 async def _own_question(request, session) -> ChecklistQuestion:
