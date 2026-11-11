@@ -10,7 +10,7 @@ import hmac
 import json
 import logging
 import time
-from datetime import date, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -19,7 +19,7 @@ from sqlalchemy import case, delete, func, or_, select
 
 from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
-                Employee, async_session)
+                Employee, KpiLog, TrelloEmployee, async_session)
 import jobs
 from jobs import send, sync_menus
 import logic
@@ -157,7 +157,7 @@ async def employees(request):
         members = await service.member_ids(session)
     return web.json_response([
         {"id": e.id, "full_name": e.full_name, "role": e.role, "has_telegram": e.telegram_id is not None,
-         "started_bot": e.id in members,
+         "started_bot": e.id in members, "linked": e.trello_employee_id is not None,
          "questions": counts.get(e.id, 0), "answered_today": answered.get(e.id, 0),
          "month_penalty": round(float(month_penalty.get(e.id) or 0), 2)}
         for e in emps
@@ -239,11 +239,22 @@ async def month_stats(request):
         if allowed is not None:
             q = q.where(ChecklistDay.employee_id.in_(allowed))
         rows = (await session.execute(q)).all()
+        # Umumiy KPI ball (Trello'dagi hamma jarima+bonus) — faqat Trello'ga bog'langanlarda.
+        link = dict((await session.execute(select(Employee.id, Employee.trello_employee_id).where(
+            Employee.id.in_([r[0] for r in rows]), Employee.trello_employee_id.is_not(None)))).all())
+        m_start = datetime.combine(start, dtime(), timezone.utc)
+        kpi = dict((await session.execute(
+            select(KpiLog.employee_id, func.sum(KpiLog.score))
+            .where(KpiLog.employee_id.in_(link.values()), KpiLog.created_at >= m_start,
+                   KpiLog.created_at < datetime.combine(end, dtime(), timezone.utc))
+            .group_by(KpiLog.employee_id))).all()) if link else {}
     return web.json_response({
         "month": start.strftime("%Y-%m"), "label": f"{MONTHS[start.month]} {start.year}",
         "current": today.strftime("%Y-%m"),
         "rows": [{"id": i, "full_name": n, "days": d, "asked": int(a or 0), "answered": int(b or 0),
-                  "penalty": round(float(p or 0), 2)} for i, n, d, a, b, p in rows],
+                  "penalty": round(float(p or 0), 2),
+                  "kpi_total": round(float(kpi.get(link[i]) or 0), 2) if i in link else None}
+                 for i, n, d, a, b, p in rows],
     })
 
 
@@ -267,6 +278,12 @@ async def employee_detail(request):
         day_rows = {r.day: r for r in await session.scalars(
             select(ChecklistDay).where(ChecklistDay.employee_id == emp_id, ChecklistDay.day >= since))}
         started = emp_id in await service.member_ids(session)
+        trello = None
+        if emp.trello_employee_id is not None:  # umumiy ball Trello botdan (faqat o'qiladi)
+            cl, other, plus = await service.month_breakdown(session, emp)
+            pay = await service.payment_day(session, emp)
+            trello = {"checklist": cl, "other": other, "plus": plus, "total": round(plus - cl - other, 2),
+                      "pay_day": fmt_day(pay) if pay else None}
     by_day: dict = {}
     for q in questions:
         by_day.setdefault(q.day, []).append(q)
@@ -277,7 +294,105 @@ async def employee_detail(request):
     return web.json_response({
         "id": emp.id, "full_name": emp.full_name, "has_telegram": emp.telegram_id is not None,
         "started_bot": started, "target_label": _day_label(target, today), "queued": queued, "days": days,
+        "role": emp.role, "trello": trello, "linked": emp.trello_employee_id is not None,
+        # Telefon — faqat admin (xodim qo'shish/tahrirlash faqat unda).
+        "phone": emp.phone if request["me"].role == service.ADMIN else None,
     })
+
+
+ROLES = ("worker", "brigadier", "seller", "supervisor", "observer", "admin")
+
+
+def _employee_fields(data: dict) -> tuple[str, str, str]:
+    name = str(data.get("full_name", "")).strip()
+    phone = str(data.get("phone", "")).strip()
+    role = data.get("role")
+    if not 2 <= len(name) <= 150:
+        raise _bad("full_name")
+    if len(logic.normalize_phone(phone)) < 9 or len(phone) > 20:
+        raise _bad("phone")
+    if role not in ROLES:
+        raise _bad("role")
+    return name, phone, role
+
+
+@routes.post("/api/employees")
+async def add_employee(request):
+    """Yangi xodim — faqat checklist'da (Trello botga tushmaydi). Faqat admin.
+    Xodim botda /start bosib, shu telefonni ulashganda Telegram'iga bog'lanadi."""
+    _require_admin(request)
+    name, phone, role = _employee_fields(await _body(request))
+    async with async_session() as session:
+        if await service.employee_by_phone(session, phone):
+            raise web.HTTPConflict(text='{"error":"phone_taken"}', content_type="application/json")
+        emp = Employee(full_name=name, phone=phone, role=role)
+        session.add(emp)
+        await session.commit()
+    logger.info("checklist xodim qo'shildi: %s (admin %s)", emp.id, request["me"].id)
+    return web.json_response({"id": emp.id})
+
+
+@routes.put("/api/employees/{id:\\d+}")
+async def edit_employee(request):
+    """Ism/telefon/rol/faollik — faqat checklist'dagi yozuv (Trello'dagi o'zgarmaydi). Faqat admin."""
+    _require_admin(request)
+    data = await _body(request)
+    name, phone, role = _employee_fields(data)
+    active = data.get("is_active", True)
+    if not isinstance(active, bool):
+        raise _bad("bad_json")
+    emp_id = int(request.match_info["id"])
+    if emp_id == request["me"].id and (role != service.ADMIN or not active):
+        raise web.HTTPConflict(text='{"error":"self_demote"}', content_type="application/json")
+    async with async_session() as session:
+        emp = await session.get(Employee, emp_id)
+        if emp is None:
+            raise web.HTTPNotFound()
+        if await service.employee_by_phone(session, phone, exclude_id=emp_id):
+            raise web.HTTPConflict(text='{"error":"phone_taken"}', content_type="application/json")
+        if logic.normalize_phone(phone) != logic.normalize_phone(emp.phone):
+            emp.telegram_id = None  # boshqa raqam — yangi egasi /start bilan qayta ulanadi
+        emp.full_name, emp.phone, emp.role, emp.is_active = name, phone, role, active
+        await session.commit()
+    logger.info("checklist xodim %s tahrirlandi (admin %s)", emp_id, request["me"].id)
+    _refresh_menus(request)
+    return web.json_response({"ok": True})
+
+
+@routes.get("/api/trello-import")
+async def trello_candidates(request):
+    """Trello'dagi faol, checklist'da hali yo'q xodimlar (admin keraklilarini import qiladi)."""
+    _require_admin(request)
+    async with async_session() as session:
+        rows = list(await session.scalars(
+            select(TrelloEmployee).where(TrelloEmployee.is_active.is_(True),
+                                         TrelloEmployee.id.not_in(select(Employee.trello_employee_id).where(
+                                             Employee.trello_employee_id.is_not(None))))
+            .order_by(TrelloEmployee.full_name)))
+    return web.json_response([{"id": t.id, "full_name": t.full_name, "role": t.role} for t in rows])
+
+
+@routes.post("/api/trello-import")
+async def trello_import(request):
+    _require_admin(request)
+    ids = _ids(await _body(request), "trello_ids", allow_empty=False)
+    added = 0
+    async with async_session() as session:
+        taken = set(await session.scalars(select(Employee.trello_employee_id).where(
+            Employee.trello_employee_id.in_(ids))))
+        tg_taken = set(await session.scalars(select(Employee.telegram_id).where(Employee.telegram_id.is_not(None))))
+        for t in await session.scalars(select(TrelloEmployee).where(TrelloEmployee.id.in_(ids),
+                                                                   TrelloEmployee.is_active.is_(True))):
+            if t.id in taken:
+                continue
+            session.add(Employee(trello_employee_id=t.id, full_name=t.full_name, phone=t.phone_number,
+                                 role=t.role if t.role in ROLES else "worker",
+                                 telegram_id=t.telegram_id if t.telegram_id not in tg_taken else None))
+            added += 1
+        await session.commit()
+    logger.info("checklist: Trello'dan %s xodim import qilindi (admin %s)", added, request["me"].id)
+    _refresh_menus(request)
+    return web.json_response({"count": added})
 
 
 @routes.post("/api/questions")
@@ -376,8 +491,8 @@ async def cancel_penalty(request):
     if bot and emp.telegram_id:
         try:
             await send(bot, emp.telegram_id,
-                       f"✅ {fmt_day(row.day)} dagi checklist jarimangiz ({fmt_ball(-row.penalty)} ball) bekor qilindi.\n"
-                       f"Oylik kuni: {fmt_day(pay_day)}")
+                       f"✅ {fmt_day(row.day)} dagi checklist jarimangiz ({fmt_ball(-row.penalty)} ball) bekor qilindi."
+                       + (f"\nOylik kuni: {fmt_day(pay_day)}" if pay_day else ""))
         except Exception:
             logger.exception("bekor qilish xabari yuborilmadi (xodim %s)", emp.id)
     return web.json_response({"ok": True})

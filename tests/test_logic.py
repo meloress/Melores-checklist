@@ -123,4 +123,8 @@ except ValueError:
 assert all(is_real_answer(t) for t in ["ha", "5", "yo'q", "Bajarildi."])
 assert not any(is_real_answer(t) for t in [".", "...", "-", " ", "👍", "?!"])
 
+# Telefon: format farqisiz oxirgi 9 raqam (ro'yxatdan o'tishda admin yozgani bilan solishtiriladi)
+assert logic.normalize_phone("+998 (90) 123-45-67") == logic.normalize_phone("998901234567") == "901234567"
+assert logic.normalize_phone(None) == "" and logic.normalize_phone("12") == "12"
+
 print("OK")

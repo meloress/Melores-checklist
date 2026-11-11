@@ -88,6 +88,12 @@ def is_locked(day: date, now: datetime | None = None) -> bool:
     return local_now(now) >= datetime.combine(day, WINDOW_START, TZ)
 
 
+def normalize_phone(raw: str | None) -> str:
+    """Faqat raqamlar, oxirgi 9 tasi (Trello bot: utils.formatters.normalize_phone)."""
+    digits = "".join(c for c in raw or "" if c.isdigit())
+    return digits[-9:]
+
+
 def is_real_answer(text: str) -> bool:
     """Kamida bitta harf yoki raqam: "ha", "5" o'tadi; ".", "-", "👍" o'tmaydi."""
     return any(c.isalnum() for c in text)

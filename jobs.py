@@ -152,12 +152,14 @@ async def close_day(bot: Bot, day: date) -> None:
                 row.kpi_log_id, pay_day = await service.write_penalty(
                     session, emp, penalty, f"{len(questions) - answered} ta savolga javob berilmadi ({fmt_day(day)})"
                 )
-                cl, other, _ = await service.month_breakdown(session, emp.id)
+                cl, other, _ = await service.month_breakdown(session, emp)
+                linked = emp.trello_employee_id is not None  # umumiy KPI va oylik kuni faqat Trello'dagilarda
                 notices.append((emp.telegram_id,
                     f"⚠️ Sizga jarima yozildi: <b>{fmt_ball(-penalty)} ball</b>\n"
                     f"Sabab: {fmt_day(day)} dagi {len(questions) - answered} ta savolga {logic.DEADLINE_TXT} gacha javob berilmadi.\n"
-                    + (f"Har {bps} ball uchun oylik kuni 1 kun kechikadi.\n" if bps else "")
-                    + f"\n{MONTHS[local_now().month]}: checklist {fmt_ball(-cl)}, muddat va boshqa {fmt_ball(-other)}."
+                    + (f"Har {bps} ball uchun oylik kuni 1 kun kechikadi.\n" if bps and linked else "")
+                    + f"\n{MONTHS[local_now().month]}: checklist {fmt_ball(-cl)}"
+                    + (f", muddat va boshqa {fmt_ball(-other)}." if linked else ".")
                     + (f"\nOylik kuni: {fmt_day(pay_day)}" if pay_day else "")))
             blocks[emp.id] = digest_block(
                 emp.full_name, [(q.text, answers[q.id].answer_text if q.id in answers else None) for q in questions],

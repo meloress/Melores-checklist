@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import (AppSetting, ChecklistAnswer, ChecklistDay, ChecklistMember, ChecklistQuestion,
-                ChecklistSettings, ChecklistViewer, Employee, KpiLog)
+                ChecklistSettings, ChecklistViewer, Employee, KpiLog, TrelloEmployee)
 import logic
 from logic import REASON_PREFIX, month_bounds, payment_date
 
@@ -151,45 +151,65 @@ async def panel_chats(session) -> list[tuple[int, bool]]:
     return [(e.telegram_id, e.role == ADMIN or e.id in leaders or e.id in viewers) for e in emps]
 
 
-async def write_penalty(session, employee: Employee, score: float, reason: str) -> tuple[int, date]:
-    """kpi_logs'ga minus ball yozadi, oylik kunini qayta hisoblaydi.
-    (kpi_log id, yangi oylik kuni) qaytaradi."""
-    log = KpiLog(employee_id=employee.id, score=-score, reason=f"{REASON_PREFIX} {reason}")
+async def write_penalty(session, employee: Employee, score: float, reason: str) -> tuple[int | None, date | None]:
+    """Trello'ga bog'langan xodim: kpi_logs'ga minus ball yozadi, oylik kunini qayta
+    hisoblaydi — (kpi_log id, yangi oylik kuni). Bog'lanmagan (checklist'ning o'zida
+    qo'shilgan) xodim: jarima faqat checklist_days.penalty'da qoladi — (None, None)."""
+    if employee.trello_employee_id is None:
+        return None, None
+    log = KpiLog(employee_id=employee.trello_employee_id, score=-score, reason=f"{REASON_PREFIX} {reason}")
     session.add(log)
     await session.flush()
     return log.id, await recompute_payment_date(session, employee)
 
 
-async def cancel_penalty(session, row: ChecklistDay, employee: Employee, by_employee_id: int) -> date:
+async def cancel_penalty(session, row: ChecklistDay, employee: Employee, by_employee_id: int) -> date | None:
     """Jarimani bekor qiladi: kpi_logs yozuvini o'chiradi, kim bekor qilganini
     yozadi, oylik kunini qayta hisoblaydi. `row.penalty` tarix uchun qoladi."""
-    if row.kpi_log_id:
-        await session.execute(delete(KpiLog).where(KpiLog.id == row.kpi_log_id, KpiLog.employee_id == employee.id))
+    if row.kpi_log_id and employee.trello_employee_id is not None:
+        await session.execute(delete(KpiLog).where(KpiLog.id == row.kpi_log_id,
+                                                   KpiLog.employee_id == employee.trello_employee_id))
     row.kpi_log_id = None
     row.cancelled_by, row.cancelled_at = by_employee_id, datetime.now(timezone.utc)
     await session.flush()
     return await recompute_payment_date(session, employee)
 
 
-async def recompute_payment_date(session, employee: Employee) -> date:
+async def recompute_payment_date(session, employee: Employee) -> date | None:
     """Trello bot qoidasi bilan bir xil (`penalty_service.update_payment_date_if_needed`):
-    joriy oyning minus ballari yig'indisidan oylik kunini noldan hisoblaydi."""
+    joriy oyning minus ballari yig'indisidan oylik kunini noldan hisoblaydi.
+    Faqat Trello'ga bog'langan xodim (oylik kuni Trello'da yashaydi)."""
+    te = await session.get(TrelloEmployee, employee.trello_employee_id) if employee.trello_employee_id else None
+    if te is None:
+        return None
     start, end = month_bounds(datetime.now(timezone.utc).date())
     total_minus = await session.scalar(
         select(func.coalesce(func.sum(-KpiLog.score), 0))
-        .where(KpiLog.employee_id == employee.id, KpiLog.score < 0,
+        .where(KpiLog.employee_id == te.id, KpiLog.score < 0,
                KpiLog.created_at >= start, KpiLog.created_at < end)
     )
-    employee.next_payment_date = payment_date(start.date(), float(total_minus), await balls_per_day_shift(session))
-    return employee.next_payment_date
+    te.next_payment_date = payment_date(start.date(), float(total_minus), await balls_per_day_shift(session))
+    return te.next_payment_date
 
 
-async def month_breakdown(session, employee_id: int) -> tuple[float, float, float]:
-    """Joriy oy: (checklist jarimasi, boshqa jarimalar, bonuslar) — musbat sonlar."""
+async def payment_day(session, employee: Employee) -> date | None:
+    te = await session.get(TrelloEmployee, employee.trello_employee_id) if employee.trello_employee_id else None
+    return te.next_payment_date if te else None
+
+
+async def month_breakdown(session, employee: Employee) -> tuple[float, float, float]:
+    """Joriy oy: (checklist jarimasi, boshqa jarimalar, bonuslar) — musbat sonlar.
+    Bog'langan xodim — Trello kpi_logs'dan (umumiy ball); bog'lanmagan — faqat checklist."""
+    if employee.trello_employee_id is None:
+        total = await session.scalar(
+            select(func.coalesce(func.sum(ChecklistDay.penalty), 0))
+            .where(ChecklistDay.employee_id == employee.id, ChecklistDay.cancelled_at.is_(None),
+                   ChecklistDay.day >= logic.local_now().date().replace(day=1)))
+        return round(float(total), 2), 0.0, 0.0
     start, end = month_bounds(datetime.now(timezone.utc).date())
     rows = await session.execute(
         select(KpiLog.score, KpiLog.reason)
-        .where(KpiLog.employee_id == employee_id, KpiLog.created_at >= start, KpiLog.created_at < end)
+        .where(KpiLog.employee_id == employee.trello_employee_id, KpiLog.created_at >= start, KpiLog.created_at < end)
     )
     checklist = other = plus = 0.0
     for score, reason in rows:
@@ -200,6 +220,21 @@ async def month_breakdown(session, employee_id: int) -> tuple[float, float, floa
         else:
             other -= score
     return round(checklist, 2), round(other, 2), round(plus, 2)
+
+
+def _phone_digits(col):
+    return func.right(func.regexp_replace(col, r"\D", "", "g"), 9)
+
+
+async def employee_by_phone(session, phone: str, exclude_id: int | None = None) -> Employee | None:
+    """Faol xodim telefon bo'yicha (oxirgi 9 raqam — +998/bo'shliq farqisiz)."""
+    norm = logic.normalize_phone(phone)
+    if len(norm) < 9:
+        return None
+    q = select(Employee).where(Employee.is_active.is_(True), _phone_digits(Employee.phone) == norm)
+    if exclude_id is not None:
+        q = q.where(Employee.id != exclude_id)
+    return await session.scalar(q.limit(1))
 
 
 async def balls_per_day_shift(session) -> int:

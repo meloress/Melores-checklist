@@ -37,6 +37,12 @@ const ERRORS = {
   schedule_order: "Yuborish vaqti javob muddatidan oldin bo'lishi kerak.",
   remind_every: "Eslatma oralig'i 0–240 daqiqa bo'lishi kerak.",
   time: "Vaqt noto'g'ri (SS:DD).",
+  full_name: "Ism 2–150 belgi bo'lishi kerak.",
+  phone: "Telefon raqami noto'g'ri (kamida 9 raqam).",
+  role: "Rolni tanlang.",
+  phone_taken: "Bu telefon raqami bilan faol xodim allaqachon bor.",
+  self_demote: "O'zingizni admin'likdan olib bo'lmaydi yoki o'chirib bo'lmaydi.",
+  trello_ids: "Kamida bitta xodimni tanlang.",
   window_open: "Hozir savollar ketgan va javob kutilmoqda — jadvalni muddatdan keyin o'zgartiring.",
   day: "Sana noto'g'ri.",
   month: "Oy noto'g'ri.",
@@ -336,6 +342,9 @@ async function screenEmployees() {
   const roles = Object.keys(ROLE_LABELS).filter((r) => employees.some((e) => e.role === r));
   setScreen(`
     <p class="page-title">Xodimlar (${employees.length})</p>
+    ${state.me.is_admin ? `
+      <button class="nav-card" id="nav-add"><span class="ic">${icon("user")}</span><span class="grow">Xodim qo'shish</span><span class="chev">›</span></button>
+      <button class="nav-card" id="nav-import"><span class="ic">${icon("users")}</span><span class="grow">Trello botdan import</span><span class="chev">›</span></button>` : ""}
     <button class="nav-card accent" id="nav-all"><span class="ic">${icon("list")}</span><span class="grow">Hammasi · qidirish</span><span class="chev">›</span></button>
     ${roles.map((r) => `
         <button class="nav-card" data-role="${r}">
@@ -344,6 +353,10 @@ async function screenEmployees() {
       `).join("")}
   `);
   root.querySelector("#nav-all").onclick = () => show(screenEmployeeList, "Barcha xodimlar", "all");
+  if (state.me.is_admin) {
+    root.querySelector("#nav-add").onclick = () => show(screenEmployeeForm, null);
+    root.querySelector("#nav-import").onclick = () => show(screenTrelloImport);
+  }
   root.querySelectorAll(".nav-card[data-role]").forEach((el) => {
     el.onclick = () => show(screenEmployeeList, ROLE_LABELS[el.dataset.role], el.dataset.role);
   });
@@ -468,6 +481,16 @@ async function screenEmployeeDetail(employeeId) {
       <div class="kv-row"><span class="k">${esc(cap(e.target_label))} ${state.me.start} da yuboriladi</span><span class="v">${e.queued.length} savol</span></div>
       <div class="kv-row"><span class="k">Jarima (7 kun)</span><span class="v">${scoreSigned(-weekPenalty)}</span></div>
     </div>
+    ${e.trello ? `
+      <p class="section-lbl">Umumiy ball · shu oy (Trello botdan)</p>
+      <div class="panel">
+        <div class="kv-row"><span class="k">Checklist jarimasi</span><span class="v">${scoreSigned(-e.trello.checklist)}</span></div>
+        <div class="kv-row"><span class="k">Muddat va boshqa jarimalar</span><span class="v">${scoreSigned(-e.trello.other)}</span></div>
+        <div class="kv-row"><span class="k">Bonus</span><span class="v">${scoreSigned(e.trello.plus)}</span></div>
+        <div class="kv-row"><span class="k">Jami</span><span class="v ${scoreClass(e.trello.total)}">${scoreSigned(e.trello.total)}</span></div>
+        ${e.trello.pay_day ? `<div class="kv-row"><span class="k">Oylik kuni</span><span class="v">${esc(e.trello.pay_day)}</span></div>` : ""}
+      </div>` : `<p class="hint">Faqat checklist xodimi — Trello botda yo'q, umumiy ball va oylik kuni yuritilmaydi.</p>`}
+    ${state.me.is_admin ? `<button class="nav-card" id="emp-edit"><span class="ic">${icon("settings")}</span><span class="grow">Xodimni tahrirlash</span><span class="chev">›</span></button>` : ""}
     <p class="section-lbl">${esc(cap(e.target_label))} ${state.me.start} · navbatdagi savollar</p>
     ${e.queued.length ? e.queued.map((q, i) => `
       <div class="fin-card" data-qid="${q.id}">
@@ -507,7 +530,64 @@ async function screenEmployeeDetail(employeeId) {
     };
   });
   bindCancel(() => replaceTop(screenEmployeeDetail, employeeId));
+  const edit = root.querySelector("#emp-edit");
+  if (edit) edit.onclick = () => show(screenEmployeeForm, e);
   setMainButton("➕ Savol qo'shish", () => show(screenBulkQuestion, employeeId), ACCENT);
+}
+
+/* Xodim qo'shish (emp=null) / tahrirlash — faqat admin. Faqat checklist'dagi yozuv o'zgaradi. */
+async function screenEmployeeForm(emp) {
+  setScreen(`
+    <p class="page-title">${emp ? "Xodimni tahrirlash" : "Yangi xodim"}</p>
+    <div class="field"><label>Ism familiya</label><input id="f-name" maxlength="150" value="${esc(emp ? emp.full_name : "")}" /></div>
+    <div class="field"><label>Telefon</label><input id="f-phone" type="tel" maxlength="20" placeholder="+998 90 123 45 67" value="${esc(emp && emp.phone ? emp.phone : "")}" /></div>
+    <div class="field"><label>Rol</label><select id="f-role">${Object.keys(ROLE_LABELS).map((r) =>
+      `<option value="${r}" ${(emp ? emp.role : "worker") === r ? "selected" : ""}>${esc(ROLE_LABELS[r])}</option>`).join("")}</select></div>
+    ${emp ? `<label class="check-row"><input type="checkbox" id="f-active" checked /><span class="grow">Faol <span class="hint">— belgini olsangiz, ro'yxatdan chiqadi va savol bormaydi</span></span></label>` : ""}
+    <p class="hint">${emp && emp.linked ? "Trello botdagi yozuvi o'zgarmaydi — faqat checklist'dagisi." : "Faqat checklist botga qo'shiladi, Trello botga tushmaydi."}
+      Xodim @${esc(state.me.bot_username || "bot")} da /start bosib, shu telefon raqamini ulashganda ro'yxatdan o'tadi.</p>
+  `);
+  setMainButton("💾 Saqlash", async () => {
+    const body = {
+      full_name: root.querySelector("#f-name").value.trim(),
+      phone: root.querySelector("#f-phone").value.trim(),
+      role: root.querySelector("#f-role").value,
+    };
+    if (emp) body.is_active = root.querySelector("#f-active").checked;
+    try {
+      if (emp) await api(`/employees/${emp.id}`, { method: "PUT", body: JSON.stringify(body) });
+      else await api("/employees", { method: "POST", body: JSON.stringify(body) });
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
+}
+
+/* Trello botdagi, checklist'da hali yo'q xodimlarni tanlab import qilish — faqat admin. */
+async function screenTrelloImport() {
+  loading();
+  const list = (await api("/trello-import")).map((t) => ({ ...t, started_bot: true }));
+  setScreen(`
+    <p class="page-title">Trello'dan import</p>
+    <p class="page-sub">Trello botda bor, lekin checklist'da yo'q xodimlar. Import qilingani Trello'ga bog'lanadi: jarimasi umumiy ballga qo'shiladi, oylik kuni ko'rinadi. Tanlangan: <b id="cnt-imp">0</b></p>
+    ${list.length > 8 ? `<div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>` : ""}
+    ${list.length ? pickerHtml(list, "imp", []) : `<p class="empty-state">Hammasi allaqachon checklist'da</p>`}
+  `);
+  if (list.length > 8) bindSearch();
+  const picked = bindPicker("imp", "#cnt-imp");
+  if (!list.length) return;
+  setMainButton("⬇️ Import qilish", async () => {
+    const ids = picked();
+    if (!ids.length) return showError(ERRORS.employee_ids);
+    try {
+      const r = await api("/trello-import", { method: "POST", body: JSON.stringify({ trello_ids: ids }) });
+      showError(`${r.count} ta xodim qo'shildi.`);
+      await goBack();
+    } catch (err) {
+      showError(err.message);
+    }
+  }, ACCENT);
 }
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -593,7 +673,7 @@ async function screenStats(month) {
     ${rows.length ? rows.map((r, i) => `
       <button class="emp-row" data-i="${i}">
         <span class="grow"><div class="name">${esc(r.full_name)}</div>
-          <div class="role">${r.answered}/${r.asked} javob · ${r.days} kun</div></span>
+          <div class="role">${r.answered}/${r.asked} javob · ${r.days} kun${r.kpi_total !== null ? ` · umumiy KPI ${scoreSigned(r.kpi_total)}` : ""}</div></span>
         <span class="badge ${pct(r) < 100 ? "warn" : ""}">${pct(r)}%</span>
         ${r.penalty ? `<span class="badge warn">${scoreSigned(-r.penalty)}</span>` : ""}
         <span class="chev">›</span>

@@ -5,6 +5,12 @@ Ikki xil jadval:
   KERAKLI ustunlar xaritalangan. Sxemasini Trello bot (Alembic) boshqaradi,
   bu bot ularni HECH QACHON yaratmaydi/o'zgartirmaydi.
 - O'zimizniki (`checklist_*`) — ishga tushganda `create_all` bilan yaratiladi.
+
+Xodimlar ALOHIDA (`checklist_employees`, 2026-11-11): birinchi ishga tushishda
+Trello xodimlari bir marta nusxalanadi (id saqlanadi — eski tarix buzilmasin),
+keyin ikki ro'yxat mustaqil. Nusxa `trello_employee_id` orqali Trello'ga bog'langan:
+uning jarimasi Trello kpi_logs'ga yoziladi va umumiy ball/oylik kuni o'qiladi.
+Checklist'da qo'shilgan yangi xodimning bog'lanishi yo'q — hammasi shu yerda.
 """
 
 from datetime import date, datetime
@@ -33,12 +39,13 @@ def _now_col():
 
 # --- Trello botning jadvallari (faqat o'qish; next_payment_date yoziladi) ---
 
-class Employee(Base):
+class TrelloEmployee(Base):
     __tablename__ = "employees"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger)
     full_name: Mapped[str] = mapped_column(String(150))
+    phone_number: Mapped[str | None] = mapped_column(String(20))
     role: Mapped[str] = mapped_column(String)  # admin/supervisor/observer/worker/brigadier/seller
     is_active: Mapped[bool] = mapped_column(Boolean)
     next_payment_date: Mapped[date | None] = mapped_column(Date)
@@ -64,14 +71,31 @@ class AppSetting(Base):
 
 # --- Checklist jadvallari ---
 
-_EMP_FK = dict(ondelete="CASCADE")  # Trello bot xodimni o'chirsa, to'sib qolmasin
+_EMP_FK = dict(ondelete="CASCADE")
+
+
+class Employee(Base):
+    """Checklist botning o'z xodimlari (Trello'nikidan mustaqil)."""
+
+    __tablename__ = "checklist_employees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Trello'dan nusxalangan bo'lsa — o'sha xodim (jarima/umumiy ball shu orqali). Yangi xodimda NULL.
+    trello_employee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employees.id", ondelete="SET NULL"), unique=True)
+    full_name: Mapped[str] = mapped_column(String(150))
+    phone: Mapped[str | None] = mapped_column(String(20))
+    role: Mapped[str] = mapped_column(String(20), default="worker")
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = _now_col()
 
 
 class ChecklistQuestion(Base):
     __tablename__ = "checklist_questions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), index=True)
     # Savol BIR MARTALIK: shu kuni 19:00 da yuboriladi (doimiy ro'yxat emas).
     day: Mapped[date] = mapped_column(Date, index=True)
     text: Mapped[str] = mapped_column(Text)
@@ -90,7 +114,7 @@ class ChecklistAnswer(Base):
     __table_args__ = (UniqueConstraint("employee_id", "question_id", "day", name="uq_checklist_answer"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), index=True)
     question_id: Mapped[int] = mapped_column(ForeignKey("checklist_questions.id", ondelete="CASCADE"))
     day: Mapped[date] = mapped_column(Date)
     # Savol keyin tahrirlansa ham, o'sha kuni nima so'ralgani ko'rinsin.
@@ -106,8 +130,8 @@ class ChecklistViewer(Base):
     __table_args__ = (UniqueConstraint("viewer_id", "employee_id", name="uq_checklist_viewer"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    viewer_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), index=True)
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK))
+    viewer_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK))
 
 
 class ChecklistDay(Base):
@@ -119,7 +143,7 @@ class ChecklistDay(Base):
     __table_args__ = (UniqueConstraint("employee_id", "day", name="uq_checklist_day"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), index=True)
     day: Mapped[date] = mapped_column(Date, index=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     asked: Mapped[int] = mapped_column(Integer, default=0)
@@ -142,7 +166,7 @@ class ChecklistMember(Base):
 
     __tablename__ = "checklist_members"
 
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", **_EMP_FK), primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), primary_key=True)
     started_at: Mapped[datetime] = _now_col()
 
 
@@ -161,8 +185,21 @@ class ChecklistSettings(Base):
                                                 server_default="{0.2,0.5,0.7,1}")
 
 
-OWN_TABLES = [m.__table__ for m in (ChecklistQuestion, ChecklistAnswer, ChecklistViewer,
+OWN_TABLES = [m.__table__ for m in (Employee, ChecklistQuestion, ChecklistAnswer, ChecklistViewer,
                                     ChecklistDay, ChecklistSettings, ChecklistMember)]
+
+# Bir martalik: Trello xodimlarini nusxalash va checklist_* FK'larini yangi jadvalga ko'chirish.
+_EMP_REFS = [("checklist_questions", "employee_id"), ("checklist_answers", "employee_id"),
+             ("checklist_viewers", "viewer_id"), ("checklist_viewers", "employee_id"),
+             ("checklist_days", "employee_id"), ("checklist_members", "employee_id")]
+_SPLIT_EMPLOYEES = [
+    "INSERT INTO checklist_employees (id, trello_employee_id, full_name, phone, role, telegram_id, is_active) "
+    "SELECT id, id, full_name, phone_number, role, telegram_id, is_active FROM employees",
+    "SELECT setval(pg_get_serial_sequence('checklist_employees', 'id'), (SELECT max(id) FROM checklist_employees))",
+] + [ddl for t, c in _EMP_REFS for ddl in (
+    f"ALTER TABLE {t} DROP CONSTRAINT IF EXISTS {t}_{c}_fkey",
+    f"ALTER TABLE {t} ADD CONSTRAINT {t}_{c}_fkey FOREIGN KEY ({c}) REFERENCES checklist_employees(id) ON DELETE CASCADE",
+)]
 
 # create_all mavjud jadvalga ustun qo'shmaydi — keyin qo'shilgan ustunlar shu yerda
 # (idempotent, har ishga tushishda xavfsiz).
@@ -191,6 +228,10 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all, tables=OWN_TABLES)
         for ddl in _ADDED_COLUMNS:
             await conn.execute(text(ddl))
+        # Bitta tranzaksiyada: yarmida xato bo'lsa hammasi qaytadi, keyingi ishga tushishda qayta uriniladi.
+        if not await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM checklist_employees)")):
+            for ddl in _SPLIT_EMPLOYEES:
+                await conn.execute(text(ddl))
         await conn.execute(
             pg_insert(ChecklistSettings.__table__).values(id=1, penalty_per_question=0.2)
             .on_conflict_do_nothing()
