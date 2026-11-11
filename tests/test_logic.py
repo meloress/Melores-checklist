@@ -27,11 +27,13 @@ def utc(y, mo, d, h, mi=0):
     return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
 
 
-# Jarima: javobsiz savol × stavka, kasr aniq
-assert penalty_for(3, 0.2) == 0.6
-assert penalty_for(0, 0.2) == 0
-assert penalty_for(-1, 0.2) == 0
-assert penalty_for(7, 0.15) == 1.05
+# Jarima: javobsiz savollar balli yig'indisi (balli yo'q eski savol — stavka), kasr aniq
+from types import SimpleNamespace as Q  # noqa: E402
+qs = [Q(id=1, points=0.5), Q(id=2, points=1.0), Q(id=3, points=None), Q(id=4, points=0.7)]
+assert penalty_for(qs, set(), 0.2) == 2.4
+assert penalty_for(qs, {2}, 0.2) == 1.4
+assert penalty_for(qs, {1, 2, 3, 4}, 0.2) == 0
+assert penalty_for([Q(id=i, points=None) for i in range(7)], set(), 0.15) == 1.05
 
 # Oylik kuni: Trello bot qoidasi — har 5 minus ball = 1 kun (15-sanadan)
 assert payment_date(date(2026, 11, 1), 4.99, 5) == date(2026, 11, 15)

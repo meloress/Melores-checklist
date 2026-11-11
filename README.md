@@ -13,6 +13,8 @@ Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martali
 - Nazoratchi faqat admin unga biriktirgan xodimlarni ko'radi va ularning savollarini tahrirlaydi.
 - Boshqa xodimlar faqat chatdan foydalanadi (/start, /ball).
 
+**Savol yozilganda belgilanadi:** muhimligi (javobsiz qolsa 0.2 / 0.5 / 0.7 / 1 ball jarima; ballsiz eski savollarga Sozlamalardagi umumiy stavka), kim javob beradi va javobni kim ko'radi. Xodimlar ro'yxati rol bo'yicha guruhlangan. Xodim javob yozishi bilan javob belgilangan o'quvchilarga darhol boradi.
+
 **Mini App:** bitta savolni bir nechta xodimga birdaniga yozish, kunlik javoblar (kun bo'yicha) va oylik statistika (javob foizi, jarima; faqat savol yetib borgan kunlar).
 
 ## Ishga tushirish

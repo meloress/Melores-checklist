@@ -67,8 +67,12 @@ def is_real_answer(text: str) -> bool:
     return any(c.isalnum() for c in text)
 
 
-def penalty_for(unanswered: int, rate: float) -> float:
-    return round(max(unanswered, 0) * rate, 2)
+POINTS = (0.2, 0.5, 0.7, 1.0)  # savol muhimligi: javobsiz qolsa shuncha jarima
+
+
+def penalty_for(questions, answered_ids, rate: float) -> float:
+    """Javobsiz savollar balli yig'indisi; balli yo'q (eski) savol — umumiy stavka."""
+    return round(sum(rate if q.points is None else q.points for q in questions if q.id not in answered_ids), 2)
 
 
 def month_bounds(reference: date) -> tuple[datetime, datetime]:

@@ -240,6 +240,7 @@ body {
 
 .check-row { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
 .check-row input { width: 18px; height: 18px; }
+.check-row.sub { margin-left: 18px; }
 
 .btn { font: inherit; font-size: 14px; font-weight: 600; padding: 12px; border-radius: 12px; cursor: pointer; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); width: 100%; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

@@ -11,7 +11,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric,
                         String, Text, UniqueConstraint, func, text)
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -76,6 +76,10 @@ class ChecklistQuestion(Base):
     day: Mapped[date] = mapped_column(Date, index=True)
     text: Mapped[str] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    # Javobsiz qolsa shuncha jarima (muhimlik: 0.2/0.5/0.7/1). NULL — eski savol, umumiy stavka.
+    points: Mapped[float | None] = mapped_column(Numeric(4, 2, asdecimal=False))
+    # Xodim javob berishi bilan javob shu xodimlarga ham boradi.
+    reader_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list, server_default="{}")
     # O'chirish = is_active=False: eski javoblar tarixi saqlanadi.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = _now_col()
@@ -162,6 +166,8 @@ _ADDED_COLUMNS = [
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS kpi_log_id integer",
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS cancelled_by integer",
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS cancelled_at timestamptz",
+    "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS points numeric(4,2)",
+    "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS reader_ids integer[] NOT NULL DEFAULT '{}'",
 ]
 
 

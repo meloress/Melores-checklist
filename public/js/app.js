@@ -31,6 +31,8 @@ const ERRORS = {
   question_sent: "Savol allaqachon yuborilgan — endi o'zgartirib bo'lmaydi.",
   nothing_to_cancel: "Bekor qiladigan jarima yo'q (yoki allaqachon bekor qilingan).",
   employee_ids: "Kamida bitta xodimni tanlang.",
+  reader_ids: "Javobni ko'radiganlar ro'yxati noto'g'ri.",
+  points: "Ballni tanlang: 0,2 / 0,5 / 0,7 / 1.",
   day: "Sana noto'g'ri.",
   month: "Oy noto'g'ri.",
 };
@@ -343,42 +345,85 @@ async function screenEmployees() {
   setMainButton("➕ Savol yozish", () => show(screenBulkQuestion), ACCENT);
 }
 
-/* Bitta savol — bir nechta xodimga (30 sotuvchiga bir xil savolni 30 marta yozmaslik uchun). */
-async function screenBulkQuestion() {
+/* Savol muhimligi: javobsiz qolsa shuncha jarima. */
+const POINTS = [0.2, 0.5, 0.7, 1];
+const fmtPts = (p) => String(p).replace(".", ",");
+
+function pointsHtml(selected) {
+  return `<div class="segmented" id="f-points">${POINTS.map((p) =>
+    `<button type="button" data-p="${p}" aria-selected="${p === selected}">${fmtPts(p)} ball</button>`).join("")}</div>`;
+}
+
+function bindPoints() {
+  const btns = [...root.querySelectorAll("#f-points button")];
+  btns.forEach((b) => { b.onclick = () => btns.forEach((x) => x.setAttribute("aria-selected", String(x === b))); });
+  return () => Number(btns.find((b) => b.getAttribute("aria-selected") === "true").dataset.p);
+}
+
+/* Xodimlar ro'yxati rol bo'yicha guruhlab (Xodimlar bo'limidagidek), har guruhda "hammasi". */
+function pickerHtml(employees, key, checked) {
+  const roles = [...new Set([...Object.keys(ROLE_LABELS), ...employees.map((e) => e.role)])]
+    .filter((r) => employees.some((e) => e.role === r));
+  return roles.map((r) => {
+    const group = employees.filter((e) => e.role === r);
+    return `
+      <label class="check-row"><input type="checkbox" data-group="${key}:${r}" />
+        <span class="grow"><b>${esc(ROLE_LABELS[r] || r)}</b> <span class="hint">(${group.length}) · hammasi</span></span></label>
+      ${group.map((e) => `
+        <label class="check-row sub" data-name="${esc(e.full_name.toLowerCase())}">
+          <input type="checkbox" class="f-${key}" data-role="${r}" value="${e.id}" ${checked.includes(e.id) ? "checked" : ""} />
+          <span class="grow">${esc(e.full_name)}${e.started_bot ? "" : ` <span class="hint">· botni ochmagan</span>`}</span>
+        </label>`).join("")}`;
+  }).join("");
+}
+
+function bindPicker(key, counterId) {
+  const boxes = [...root.querySelectorAll(`.f-${key}`)];
+  const count = () => { root.querySelector(counterId).textContent = boxes.filter((b) => b.checked).length; };
+  root.querySelectorAll(`[data-group^="${key}:"]`).forEach((g) => {
+    const role = g.dataset.group.slice(key.length + 1);
+    g.onchange = () => {
+      boxes.forEach((b) => { if (b.dataset.role === role && b.closest(".check-row").style.display !== "none") b.checked = g.checked; });
+      count();
+    };
+  });
+  boxes.forEach((b) => { b.onchange = count; });
+  count();
+  return () => boxes.filter((b) => b.checked).map((b) => Number(b.value));
+}
+
+/* Bitta savol — bir nechta xodimga; ball (muhimlik) va javobni kimlar ko'rishi shu yerda belgilanadi. */
+async function screenBulkQuestion(preselectId) {
   loading();
   const employees = (await api("/employees")).filter((e) => e.has_telegram);
+  const pre = preselectId ? [preselectId] : [];
   setScreen(`
     <p class="page-title">Yangi savol</p>
     <div class="field">
       <label>Savol matni</label>
       <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qaysi mijozlarga qo'ng'iroq qildingiz?"></textarea>
     </div>
+    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(POINTS[0])}</div>
     <p class="hint">Kun davomida yozilgani bugun ${state.me.start} da, ${state.me.start} dan keyin yozilgani ertaga ${state.me.start} da yuboriladi.</p>
-    <p class="section-lbl">Kimga · tanlangan: <b id="cnt">0</b></p>
     <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
-    <label class="check-row"><input type="checkbox" id="f-all" /><span class="grow"><b>Hammasini belgilash</b> <span class="hint">(ko'rinayotganlarni)</span></span></label>
-    ${employees.map((e) => `
-      <label class="check-row" data-name="${esc(e.full_name.toLowerCase())}">
-        <input type="checkbox" class="f-emp" value="${e.id}" />
-        <span class="grow">${esc(e.full_name)} <span class="hint">${esc(ROLE_LABELS[e.role] || e.role)}${e.started_bot ? "" : " · botni ochmagan"}</span></span>
-      </label>
-    `).join("")}
+    <p class="section-lbl">Kim javob beradi · tanlangan: <b id="cnt-ans">0</b></p>
+    ${pickerHtml(employees, "ans", pre)}
+    <p class="section-lbl">Javobni kim ko'radi · tanlangan: <b id="cnt-read">0</b></p>
+    <p class="hint">Xodim javob yozishi bilan javob shu odamlarga ham boradi (ular botda /start bosgan bo'lishi kerak). Admin va nazoratchi ${state.me.deadline} dagi yig'mani baribir oladi.</p>
+    ${pickerHtml(employees, "read", [])}
   `);
   bindSearch();
-  const boxes = [...root.querySelectorAll(".f-emp")];
-  const count = () => { root.querySelector("#cnt").textContent = boxes.filter((b) => b.checked).length; };
-  boxes.forEach((b) => { b.onchange = count; });
-  root.querySelector("#f-all").onchange = (ev) => {
-    boxes.forEach((b) => { if (b.closest(".check-row").style.display !== "none") b.checked = ev.target.checked; });
-    count();
-  };
+  const points = bindPoints();
+  const answerers = bindPicker("ans", "#cnt-ans");
+  const readers = bindPicker("read", "#cnt-read");
   setMainButton("💾 Saqlash", async () => {
     const text = root.querySelector("#f-text").value.trim();
-    const ids = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+    const ids = answerers();
     if (!text) return showError("Savol matnini kiriting.");
     if (!ids.length) return showError(ERRORS.employee_ids);
     try {
-      const r = await api("/questions", { method: "POST", body: JSON.stringify({ text, employee_ids: ids }) });
+      const r = await api("/questions", { method: "POST", body: JSON.stringify({
+        text, employee_ids: ids, reader_ids: readers(), points: points() }) });
       showError(`${r.count} ta xodimga yozildi — ${r.day} ${state.me.start} da yuboriladi.`);
       await goBack();
     } catch (err) {
@@ -422,6 +467,7 @@ async function screenEmployeeDetail(employeeId) {
     ${e.queued.length ? e.queued.map((q, i) => `
       <div class="fin-card" data-qid="${q.id}">
         <div class="top"><span class="task">${i + 1}. ${esc(q.text)}</span></div>
+        <p class="hint">${q.points ? `javobsiz ${fmtPts(q.points)} ball` : "umumiy stavka"}${q.readers ? ` · javobni ${q.readers} kishi ko'radi` : ""}</p>
         <div class="member-actions">
           ${i ? `<button class="q-up">↑ Yuqoriga</button>` : ""}
           <button class="q-edit">Tahrirlash</button>
@@ -456,7 +502,7 @@ async function screenEmployeeDetail(employeeId) {
     };
   });
   bindCancel(() => replaceTop(screenEmployeeDetail, employeeId));
-  setMainButton("➕ Savol qo'shish", () => show(screenQuestionForm, employeeId, null, e.target_label), ACCENT);
+  setMainButton("➕ Savol qo'shish", () => show(screenBulkQuestion, employeeId), ACCENT);
 }
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -573,7 +619,7 @@ function dayPanelHtml(d, title) {
       </div>
       ${d.items.map((it) => `
         <div class="kv-row" style="flex-direction:column;gap:3px">
-          <span class="k">${esc(it.q)}</span>
+          <span class="k">${esc(it.q)}${it.points ? ` · ${fmtPts(it.points)} ball` : ""}</span>
           ${it.a ? `<span style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(it.a)}</span><span class="hint">${esc(it.at)}</span>`
             : `<span class="hint">javob berilmagan</span>`}
         </div>
@@ -582,21 +628,23 @@ function dayPanelHtml(d, title) {
     </div>`;
 }
 
+/* Faqat tahrirlash (yangi savol — screenBulkQuestion). */
 async function screenQuestionForm(employeeId, question, targetLabel) {
   setScreen(`
-    <p class="page-title">${question ? "Savolni tahrirlash" : "Yangi savol"}</p>
+    <p class="page-title">Savolni tahrirlash</p>
     <div class="field">
       <label>Savol matni</label>
-      <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qaysi mijozlarga qo'ng'iroq qildingiz?">${esc(question ? question.text : "")}</textarea>
+      <textarea id="f-text" maxlength="1000">${esc(question.text)}</textarea>
     </div>
+    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(question.points ?? POINTS[0])}</div>
     <p class="hint">${esc(cap(targetLabel || "bugun"))} ${state.me.start} da yuboriladi. Xodim chatda matn bilan javob beradi.</p>
   `);
+  const points = bindPoints();
   setMainButton("💾 Saqlash", async () => {
     const text = root.querySelector("#f-text").value.trim();
     if (!text) return showError("Savol matnini kiriting.");
     try {
-      if (question) await api(`/questions/${question.id}`, { method: "PUT", body: JSON.stringify({ text }) });
-      else await api("/questions", { method: "POST", body: JSON.stringify({ text, employee_ids: [employeeId] }) });
+      await api(`/questions/${question.id}`, { method: "PUT", body: JSON.stringify({ text, points: points() }) });
       await goBack();
     } catch (err) {
       showError(err.message);

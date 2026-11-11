@@ -56,6 +56,15 @@ async def save_answer(session, employee_id: int, question: ChecklistQuestion, da
     )
 
 
+async def reader_chats(session, question: ChecklistQuestion) -> list[int]:
+    """Javobni o'qiydiganlar (savolda belgilangan), javob bergan xodimning o'zidan tashqari."""
+    ids = [i for i in question.reader_ids or [] if i != question.employee_id]
+    if not ids:
+        return []
+    return list(await session.scalars(select(Employee.telegram_id).where(
+        Employee.id.in_(ids), Employee.is_active.is_(True), Employee.telegram_id.is_not(None))))
+
+
 async def mark_delivered(session, employee_id: int, day: date, asking_question_id: int | None = None,
                          set_asking: bool = False) -> None:
     """Savol xabari yetib bordi (birinchi marta). `set_asking` — chatda hozir

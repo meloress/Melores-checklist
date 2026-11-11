@@ -4,6 +4,7 @@ Qaysi savolga javob kutilayotgani bazada (`checklist_days.asking_question_id`),
 xotirada emas — bot 19:00–21:00 oralig'ida qayta ishga tushsa (deploy) ham
 xodim yozgan javob yo'qolmaydi."""
 
+import logging
 from datetime import date
 from html import escape
 
@@ -12,11 +13,12 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from db import ChecklistQuestion, async_session
-from jobs import START_KB
+from jobs import START_KB, send
 from logic import DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_real_answer, local_now, open_day
 import service
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 NOT_REGISTERED = ("Siz tizimda topilmadingiz. Avval asosiy Melores botida ro'yxatdan o'ting, "
                   "keyin bu yerda /start bosing.")
@@ -44,7 +46,8 @@ async def _ask_next(message: Message, telegram_id: int, day: date | None = None)
         await message.answer("✅ Rahmat! Barcha savollarga javob berdingiz.")
         return
     idx = questions.index(nxt) + 1
-    await message.answer(f"Savol {idx}/{len(questions)}:\n\n<b>{escape(nxt.text)}</b>", parse_mode="HTML")
+    ball = f" · javobsiz {fmt_ball(-nxt.points)} ball" if nxt.points else ""
+    await message.answer(f"Savol {idx}/{len(questions)}{ball}:\n\n<b>{escape(nxt.text)}</b>", parse_mode="HTML")
 
 
 @router.message(CommandStart())
@@ -106,9 +109,17 @@ async def on_text(message: Message) -> None:
         if answering and not is_real_answer(message.text):
             await message.answer("Javob bo'sh — iltimos, so'z yoki raqam bilan yozing.")
             return
+        readers = []
         if answering:
             await service.save_answer(session, emp.id, question, row.day, message.text)
             await session.commit()
+            readers = await service.reader_chats(session, question)
+    for chat_id in readers:
+        try:
+            await send(message.bot, chat_id, f"📩 <b>{escape(emp.full_name)}</b> javob berdi\n\n"
+                                             f"<b>{escape(question.text)}</b>\n— {escape(message.text[:3000])}")
+        except Exception:
+            logger.exception("checklist: javob o'quvchiga ketmadi (%s)", chat_id)
     # Hech qaysi savol so'ralmagan bo'lsa — joriy savol beriladi (javob sifatida
     # saqlanmaydi). Yarim tundan keyin kechagi savollarga yozilsa — o'sha kun davom etadi.
     await _ask_next(message, message.from_user.id, row.day if answering else None)

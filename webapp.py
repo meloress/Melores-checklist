@@ -20,7 +20,7 @@ from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
                 Employee, async_session)
 from jobs import send
-from logic import (DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
+from logic import (DEADLINE_TXT, MONTHS, POINTS, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
                    reminder_times)
 import service
 
@@ -92,6 +92,24 @@ async def _body(request) -> dict:
     return data
 
 
+def _points(data: dict) -> float:
+    try:
+        p = round(float(data.get("points", POINTS[0])), 2)
+    except (TypeError, ValueError):
+        p = None
+    if p not in POINTS:
+        raise web.HTTPBadRequest(text='{"error":"points"}', content_type="application/json")
+    return p
+
+
+def _ids(data: dict, key: str, allow_empty: bool) -> list[int]:
+    ids = data.get(key, [])
+    if (not isinstance(ids, list) or len(ids) > 1000 or (not ids and not allow_empty)
+            or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
+        raise web.HTTPBadRequest(text=f'{{"error":"{key}"}}', content_type="application/json")
+    return ids
+
+
 def _text(data: dict) -> str:
     text = str(data.get("text", "")).strip()
     if not text or len(text) > 1000:
@@ -150,7 +168,7 @@ def _day_json(d, r, questions, answer_of) -> dict:
     items = []
     for q in questions:
         a = answer_of(q)
-        items.append({"q": q.text, "a": a.answer_text if a else None,
+        items.append({"q": q.text, "a": a.answer_text if a else None, "points": q.points,
                       "at": local_now(a.answered_at).strftime("%H:%M") if a else None})
     return {
         "day_id": r.id if r else None, "day": fmt_day(d), "items": items,
@@ -250,7 +268,7 @@ async def employee_detail(request):
     days = [_day_json(d, day_rows.get(d), by_day.get(d, []), lambda q, d=d: answers.get((d, q.id)))
             for d in sorted(set(by_day) | set(day_rows), reverse=True)
             if is_locked(d, now)]  # hali yuborilmagani "navbatdagi savollar"da
-    queued = [{"id": q.id, "text": q.text} for q in by_day.get(target, []) if not is_locked(q.day, now)]
+    queued = [{"id": q.id, "text": q.text, "points": q.points, "readers": len(q.reader_ids or [])} for q in by_day.get(target, []) if not is_locked(q.day, now)]
     return web.json_response({
         "id": emp.id, "full_name": emp.full_name, "has_telegram": emp.telegram_id is not None,
         "started_bot": started, "target_label": _day_label(target, today), "queued": queued, "days": days,
@@ -262,11 +280,10 @@ async def add_question(request):
     """Bitta savol bir yoki bir nechta xodimga. Keyingi 19:00 ga yoziladi:
     kunduzi — bugungi, kechqurun — ertangi."""
     data = await _body(request)
-    text = _text(data)
-    ids = data.get("employee_ids")
-    if not isinstance(ids, list) or not ids or len(ids) > 1000 or not all(isinstance(i, int) for i in ids):
-        raise web.HTTPBadRequest(text='{"error":"employee_ids"}', content_type="application/json")
-    for i in ids:
+    text, points = _text(data), _points(data)
+    ids = _ids(data, "employee_ids", allow_empty=False)
+    readers = sorted(set(_ids(data, "reader_ids", allow_empty=True)))
+    for i in ids + readers:
         _in_scope(request, i)
     day = question_day()
     async with async_session() as session:
@@ -278,7 +295,8 @@ async def add_question(request):
             select(ChecklistQuestion.employee_id, func.max(ChecklistQuestion.position))
             .where(ChecklistQuestion.employee_id.in_(valid), ChecklistQuestion.day == day)
             .group_by(ChecklistQuestion.employee_id))).all())
-        session.add_all(ChecklistQuestion(employee_id=e, day=day, text=text, position=(last.get(e) or 0) + 1)
+        session.add_all(ChecklistQuestion(employee_id=e, day=day, text=text, position=(last.get(e) or 0) + 1,
+                                          points=points, reader_ids=readers)
                         for e in valid)
         await session.commit()
     logger.info("checklist savol %s xodimga, %s (xodim %s)", len(valid), day, request["me"].id)
@@ -299,12 +317,13 @@ async def _own_question(request, session) -> ChecklistQuestion:
 
 @routes.put("/api/questions/{id:\\d+}")
 async def edit_question(request):
-    text = _text(await _body(request))
+    data = await _body(request)
+    text, points = _text(data), _points(data)
     async with async_session() as session:
         q = await _own_question(request, session)
-        q.text = text
+        q.text, q.points = text, points
         await session.commit()
-    return web.json_response({"id": q.id, "text": q.text})
+    return web.json_response({"id": q.id, "text": q.text, "points": q.points})
 
 
 @routes.delete("/api/questions/{id:\\d+}")

@@ -50,8 +50,9 @@ async def remind(bot: Bot) -> None:
             if done == len(questions):
                 continue
             if done == 0:
+                at_risk = penalty_for(questions, answers, rate)
                 text = (f"📝 <b>Bugungi savollar</b>: {len(questions)} ta.\n"
-                        f"Soat {DEADLINE_TXT} gacha javob bering — javobsiz har savolga {fmt_ball(-rate)} ball.")
+                        f"Soat {DEADLINE_TXT} gacha javob bering — javob bermasangiz jami {fmt_ball(-at_risk)} ball.")
             else:
                 text = f"⏰ Eslatma: {done}/{len(questions)} savolga javob berdingiz. {DEADLINE_TXT} gacha tugating."
             try:
@@ -101,7 +102,7 @@ async def close_day(bot: Bot, day: date) -> None:
                 # Telegram haqiqatan "bloklangan" degan bo'lsa — jarima; yuborishga
                 # umuman urinilmagan bo'lsa (bot o'chiq edi) — yo'q.
                 status = BLOCKED if row.blocked_at is not None else NOT_SENT
-            penalty = penalty_for(len(questions) - answered, rate) if status in (DELIVERED, BLOCKED) else 0.0
+            penalty = penalty_for(questions, answers, rate) if status in (DELIVERED, BLOCKED) else 0.0
             row.asked, row.answered, row.penalty = len(questions), answered, penalty
             row.closed_at = datetime.now(timezone.utc)
             row.asking_question_id = None
