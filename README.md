@@ -15,6 +15,10 @@ Rahbar yoki nazoratchi kun davomida kerakli xodimlarga savol yozadi (bir martali
 
 **Savol yozilganda belgilanadi:** muhimligi (javobsiz qolsa 0.2 / 0.5 / 0.7 / 1 ball jarima; ballsiz eski savollarga Sozlamalardagi umumiy stavka), kim javob beradi va javobni kim ko'radi. Xodimlar ro'yxati rol bo'yicha guruhlangan. Xodim javob yozishi bilan javob belgilangan o'quvchilarga darhol boradi.
 
+**Sozlamalar (faqat admin, Mini App):** yuborish vaqti, javob muddati, eslatma oralig'i, ball variantlari va eski savollar stavkasi. Hammasi bazada (`checklist_settings`), saqlanganda bot qayta ishga tushmasdan jadvalni yangilaydi. Yuborish va muddat oralig'ida jadvalni o'zgartirib bo'lmaydi. Yuqoridagi 19:00/21:00/30 — standart qiymatlar.
+
+**Huquqlar:** Panel tugmasi faqat admin, rahbar va nazoratchiga ko'rinadi. Rahbarni admin tayinlaydi; rahbar hamma xodimni ko'radi va to'liq yig'ma oladi, sozlama va jarimani bekor qilish faqat adminda.
+
 **Mini App:** bitta savolni bir nechta xodimga birdaniga yozish, kunlik javoblar (kun bo'yicha) va oylik statistika (javob foizi, jarima; faqat savol yetib borgan kunlar).
 
 ## Ishga tushirish

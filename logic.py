@@ -3,13 +3,34 @@
 from datetime import date, datetime, time, timedelta, timezone
 from html import escape
 
-from config import settings
-
 TZ = timezone(timedelta(hours=5))  # Toshkent, DST yo'q
-WINDOW_START = time.fromisoformat(settings.checklist_start)  # savollar keladi
-DEADLINE = time.fromisoformat(settings.checklist_deadline)  # shundan keyin jarima
-assert WINDOW_START < DEADLINE, "CHECKLIST_START CHECKLIST_DEADLINE'dan oldin bo'lishi kerak"
-START_TXT, DEADLINE_TXT = WINDOW_START.strftime("%H:%M"), DEADLINE.strftime("%H:%M")
+
+# Kun jadvali va ball variantlari — admin Sozlamalarda o'zgartiradi (checklist_settings),
+# ishga tushishda va har o'zgarishda configure() bilan shu yerga yoziladi. Boshqa
+# modullar `logic.START_TXT` deb o'qiydi (from-import qilsa eski qiymat qotib qoladi).
+WINDOW_START, DEADLINE, REMIND_EVERY_MIN = time(19), time(21), 30  # savollar keladi / jarima / eslatma
+POINTS = (0.2, 0.5, 0.7, 1.0)  # savol muhimligi: javobsiz qolsa shuncha jarima
+START_TXT, DEADLINE_TXT = "19:00", "21:00"
+
+
+def check_schedule(start: time, deadline: time, every_min: int, points) -> tuple:
+    """Tekshiradi va (start, deadline, every_min, points) qaytaradi; noto'g'ri — ValueError(kalit)."""
+    if not start < deadline:
+        raise ValueError("schedule_order")
+    if not 0 <= every_min <= 240:
+        raise ValueError("remind_every")
+    pts = tuple(sorted({round(float(p), 2) for p in points}))
+    if not 1 <= len(pts) <= 6 or not all(0.05 <= p <= 10 for p in pts):
+        raise ValueError("points_list")
+    return start, deadline, every_min, pts
+
+
+def configure(start: time, deadline: time, every_min: int, points) -> None:
+    global WINDOW_START, DEADLINE, REMIND_EVERY_MIN, POINTS, START_TXT, DEADLINE_TXT
+    WINDOW_START, DEADLINE, REMIND_EVERY_MIN, POINTS = check_schedule(start, deadline, every_min, points)
+    START_TXT, DEADLINE_TXT = WINDOW_START.strftime("%H:%M"), DEADLINE.strftime("%H:%M")
+
+
 REASON_PREFIX = "Checklist:"
 BASE_PAYMENT_DAY = 15  # Trello bot: penalty_service.BASE_PAYMENT_DAY
 MESSAGE_LIMIT = 3800  # Telegram 4096, zaxira bilan
@@ -18,15 +39,20 @@ MONTHS = ["", "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul",
           "Avgust", "Sentyabr", "Oktyabr", "Noyabr", "Dekabr"]
 
 
-def reminder_times(start: time = WINDOW_START, deadline: time = DEADLINE,
-                   every_min: int = settings.checklist_remind_every_min) -> list[time]:
-    """Boshlanishdan muddatgacha har `every_min` daqiqada (birinchisi — savollar xabari)."""
+def reminder_times(start: time | None = None, deadline: time | None = None,
+                   every_min: int | None = None) -> list[time]:
+    """Boshlanishdan muddatgacha har `every_min` daqiqada (birinchisi — savollar xabari).
+    0 — eslatma yo'q, faqat savollar xabari."""
+    start, deadline = start or WINDOW_START, deadline or DEADLINE
+    every_min = REMIND_EVERY_MIN if every_min is None else every_min
+    if every_min <= 0:
+        return [start]
     t = datetime.combine(date.min, start)
     end = datetime.combine(date.min, deadline)
     out = []
     while t < end:
         out.append(t.time())
-        t += timedelta(minutes=max(every_min, 1))
+        t += timedelta(minutes=every_min)
     return out
 
 
@@ -65,9 +91,6 @@ def is_locked(day: date, now: datetime | None = None) -> bool:
 def is_real_answer(text: str) -> bool:
     """Kamida bitta harf yoki raqam: "ha", "5" o'tadi; ".", "-", "👍" o'tmaydi."""
     return any(c.isalnum() for c in text)
-
-
-POINTS = (0.2, 0.5, 0.7, 1.0)  # savol muhimligi: javobsiz qolsa shuncha jarima
 
 
 def penalty_for(questions, answered_ids, rate: float) -> float:

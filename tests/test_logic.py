@@ -12,8 +12,6 @@ from urllib.parse import urlencode
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("BOT_TOKEN", "123:test")
 os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost:1/x")
-# .env'da sinov vaqtlari bo'lsa ham testlar standart jadvalni tekshirsin
-os.environ.update(CHECKLIST_START="19:00", CHECKLIST_DEADLINE="21:00", CHECKLIST_REMIND_EVERY_MIN="30")
 
 from datetime import time  # noqa: E402
 
@@ -53,6 +51,23 @@ assert is_past_deadline(date(2026, 11, 9), utc(2026, 11, 9, 16))  # 21:00
 # Eslatmalar: 19:00 (savollar), 19:30, 20:00, 20:30 — 21:00 da emas (u jarima)
 assert reminder_times() == [time(19), time(19, 30), time(20), time(20, 30)]
 assert reminder_times(time(13, 0), time(13, 10), 5) == [time(13), time(13, 5)]
+assert reminder_times(time(19), time(21), 0) == [time(19)]  # 0 = eslatma yo'q
+
+# Sozlamadan jadval: tekshiruv va qo'llash (oxirida standartga qaytariladi)
+import logic  # noqa: E402
+for bad, key in (((time(21), time(19), 30, [1]), "schedule_order"), ((time(19), time(21), 300, [1]), "remind_every"),
+                 ((time(19), time(21), 30, []), "points_list"), ((time(19), time(21), 30, [0, 1]), "points_list")):
+    try:
+        logic.check_schedule(*bad)
+        raise AssertionError(bad)
+    except ValueError as e:
+        assert str(e) == key, (bad, e)
+logic.configure(time(18, 30), time(20), 60, [1, 0.5, 0.5])
+assert (logic.START_TXT, logic.DEADLINE_TXT, logic.POINTS) == ("18:30", "20:00", (0.5, 1.0))
+assert reminder_times() == [time(18, 30), time(19, 30)]
+assert open_day(utc(2026, 11, 9, 13, 30)) == date(2026, 11, 9)  # 18:30 — endi ochiq
+assert is_past_deadline(date(2026, 11, 9), utc(2026, 11, 9, 15))  # 20:00
+logic.configure(time(19), time(21), 30, [0.2, 0.5, 0.7, 1])
 
 assert fmt_ball(-0.6) == "-0,6" and fmt_ball(-1.0) == "-1" and fmt_ball(0.001) == "0"
 

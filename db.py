@@ -153,6 +153,12 @@ class ChecklistSettings(Base):
     penalty_per_question: Mapped[float] = mapped_column(Numeric(4, 2, asdecimal=False), default=0.2)
     # Rahbarlar: admin belgilaydi; hamma xodimni ko'radi, sozlama/jarima bekor qilish — yo'q.
     leader_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list, server_default="{}")
+    # Kun jadvali (Toshkent, "HH:MM") va savol ball variantlari — logic.configure() ga.
+    start_time: Mapped[str] = mapped_column(String(5), server_default="19:00")
+    deadline_time: Mapped[str] = mapped_column(String(5), server_default="21:00")
+    remind_every_min: Mapped[int] = mapped_column(Integer, server_default="30")
+    points: Mapped[list[float]] = mapped_column(ARRAY(Numeric(4, 2, asdecimal=False)),
+                                                server_default="{0.2,0.5,0.7,1}")
 
 
 OWN_TABLES = [m.__table__ for m in (ChecklistQuestion, ChecklistAnswer, ChecklistViewer,
@@ -171,6 +177,10 @@ _ADDED_COLUMNS = [
     "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS points numeric(4,2)",
     "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS reader_ids integer[] NOT NULL DEFAULT '{}'",
     "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS leader_ids integer[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS start_time varchar(5) NOT NULL DEFAULT '19:00'",
+    "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS deadline_time varchar(5) NOT NULL DEFAULT '21:00'",
+    "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS remind_every_min integer NOT NULL DEFAULT 30",
+    "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS points numeric(4,2)[] NOT NULL DEFAULT '{0.2,0.5,0.7,1}'",
 ]
 
 

@@ -32,7 +32,12 @@ const ERRORS = {
   nothing_to_cancel: "Bekor qiladigan jarima yo'q (yoki allaqachon bekor qilingan).",
   employee_ids: "Kamida bitta xodimni tanlang.",
   reader_ids: "Javobni ko'radiganlar ro'yxati noto'g'ri.",
-  points: "Ballni tanlang: 0,2 / 0,5 / 0,7 / 1.",
+  points: "Ballni ro'yxatdan tanlang.",
+  points_list: "Ball variantlari: 1–6 ta son, har biri 0,05 dan 10 gacha (masalan: 0,2 0,5 0,7 1).",
+  schedule_order: "Yuborish vaqti javob muddatidan oldin bo'lishi kerak.",
+  remind_every: "Eslatma oralig'i 0–240 daqiqa bo'lishi kerak.",
+  time: "Vaqt noto'g'ri (SS:DD).",
+  window_open: "Hozir savollar ketgan va javob kutilmoqda — jadvalni muddatdan keyin o'zgartiring.",
   day: "Sana noto'g'ri.",
   month: "Oy noto'g'ri.",
 };
@@ -345,12 +350,12 @@ async function screenEmployees() {
   setMainButton("➕ Savol yozish", () => show(screenBulkQuestion), ACCENT);
 }
 
-/* Savol muhimligi: javobsiz qolsa shuncha jarima. */
-const POINTS = [0.2, 0.5, 0.7, 1];
+/* Savol muhimligi: javobsiz qolsa shuncha jarima. Variantlar — Sozlamalarda (state.me.points). */
 const fmtPts = (p) => String(p).replace(".", ",");
 
 function pointsHtml(selected) {
-  return `<div class="segmented" id="f-points">${POINTS.map((p) =>
+  const opts = state.me.points.includes(selected) ? state.me.points : [...state.me.points, selected].sort((a, b) => a - b);
+  return `<div class="segmented" id="f-points">${opts.map((p) =>
     `<button type="button" data-p="${p}" aria-selected="${p === selected}">${fmtPts(p)} ball</button>`).join("")}</div>`;
 }
 
@@ -403,7 +408,7 @@ async function screenBulkQuestion(preselectId) {
       <label>Savol matni</label>
       <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qaysi mijozlarga qo'ng'iroq qildingiz?"></textarea>
     </div>
-    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(POINTS[0])}</div>
+    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(state.me.points[0])}</div>
     <p class="hint">Kun davomida yozilgani bugun ${state.me.start} da, ${state.me.start} dan keyin yozilgani ertaga ${state.me.start} da yuboriladi.</p>
     <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
     <p class="section-lbl">Kim javob beradi · tanlangan: <b id="cnt-ans">0</b></p>
@@ -636,7 +641,7 @@ async function screenQuestionForm(employeeId, question, targetLabel) {
       <label>Savol matni</label>
       <textarea id="f-text" maxlength="1000">${esc(question.text)}</textarea>
     </div>
-    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(question.points ?? POINTS[0])}</div>
+    <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(question.points ?? state.me.points[0])}</div>
     <p class="hint">${esc(cap(targetLabel || "bugun"))} ${state.me.start} da yuboriladi. Xodim chatda matn bilan javob beradi.</p>
   `);
   const points = bindPoints();
@@ -783,32 +788,45 @@ async function screenProfile() {
   if (settingsBtn) settingsBtn.onclick = () => show(screenSettings);
 }
 
+const REMIND_OPTIONS = [0, 15, 20, 30, 45, 60, 90, 120];
+
+/* Hamma sozlama bitta formada (faqat admin). */
 async function screenSettings() {
   loading();
   const s = await api("/settings");
+  if (!REMIND_OPTIONS.includes(s.remind_every_min)) REMIND_OPTIONS.push(s.remind_every_min);
   setScreen(`
     <p class="page-title">Sozlamalar</p>
-    <button class="settings-row" id="row-penalty">
-      <span class="lbl">Javobsiz har bir savol uchun jarima (ball)</span><span class="val">${esc(String(s.penalty_per_question).replace(".", ","))}</span>
-    </button>
+    <p class="section-lbl">Kun jadvali (Toshkent vaqti)</p>
+    <div class="field"><label>Savollar yuboriladi</label><input id="f-start" type="time" value="${esc(s.start_time)}" /></div>
+    <div class="field"><label>Javob muddati — shu vaqtda jarima va yig'ma</label><input id="f-deadline" type="time" value="${esc(s.deadline_time)}" /></div>
+    <div class="field"><label>Eslatma oralig'i</label>
+      <select id="f-every">${REMIND_OPTIONS.sort((a, b) => a - b).map((m) =>
+        `<option value="${m}" ${m === s.remind_every_min ? "selected" : ""}>${m ? `har ${m} daqiqada` : "eslatma yo'q"}</option>`).join("")}</select></div>
+    <p class="hint">Kechqurun savollar ketib, javob kutilayotgan paytda (yuborish va muddat oralig'ida) jadvalni o'zgartirib bo'lmaydi.</p>
+    <p class="section-lbl">Ball tizimi</p>
+    <div class="field"><label>Savol muhimligi variantlari (ball, bo'sh joy bilan)</label>
+      <input id="f-points-list" inputmode="decimal" value="${esc(s.points.map(fmtPts).join(" "))}" placeholder="0,2 0,5 0,7 1" /></div>
+    <p class="hint">Savol yozilganda shulardan biri tanlanadi: javob berilmasa shuncha jarima. 1 dan 6 tagacha qiymat, 0,05–10.</p>
+    <div class="field"><label>Balli yo'q eski savollar uchun jarima</label>
+      <input id="f-rate" type="number" inputmode="decimal" min="0" max="10" step="0.05" value="${esc(s.penalty_per_question)}" /></div>
     <p class="hint">Jarima umumiy KPI ballga yoziladi va oylik kunini suradi (asosiy tizim sozlamasi bo'yicha).</p>
   `);
-  root.querySelector("#row-penalty").onclick = () => show(screenEditPenalty, s.penalty_per_question);
-}
-
-async function screenEditPenalty(value) {
-  setScreen(`
-    <p class="page-title">Jarima miqdori</p>
-    <div class="field">
-      <label>Javobsiz har bir savol uchun (ball)</label>
-      <input id="f-value" type="number" inputmode="decimal" min="0" max="10" step="0.05" value="${esc(value)}" />
-    </div>
-    <p class="hint">Masalan 0,2: 5 ta savoldan 3 tasiga javob berilmasa — −0,6 ball.</p>
-  `);
   setMainButton("💾 Saqlash", async () => {
-    const raw = root.querySelector("#f-value").value.replace(",", ".");
+    const points = root.querySelector("#f-points-list").value.trim().split(/[\s;]+/).filter(Boolean)
+      .map((x) => Number(x.replace(",", ".")));
+    if (!points.length || points.some((p) => !Number.isFinite(p))) return showError(ERRORS.points_list);
+    const body = {
+      start_time: root.querySelector("#f-start").value,
+      deadline_time: root.querySelector("#f-deadline").value,
+      remind_every_min: Number(root.querySelector("#f-every").value),
+      points,
+      penalty_per_question: Number(root.querySelector("#f-rate").value.replace(",", ".")),
+    };
     try {
-      await api("/settings", { method: "PUT", body: JSON.stringify({ penalty_per_question: Number(raw) }) });
+      await api("/settings", { method: "PUT", body: JSON.stringify(body) });
+      state.me = await api("/me");
+      showError("Saqlandi.");
       await goBack();
     } catch (err) {
       showError(err.message);

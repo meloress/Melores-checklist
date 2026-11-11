@@ -1,14 +1,22 @@
 """Bot, job va Mini App ishlatadigan baza so'rovlari. Har biri chaqiruvchining
 sessiyasida ishlaydi; commit'ni chaqiruvchi qiladi."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import (AppSetting, ChecklistAnswer, ChecklistDay, ChecklistMember, ChecklistQuestion,
                 ChecklistSettings, ChecklistViewer, Employee, KpiLog)
+import logic
 from logic import REASON_PREFIX, month_bounds, payment_date
+
+
+async def load_schedule(session) -> None:
+    """Bazadagi kun jadvali va ball variantlarini logic'ga yozadi."""
+    s = await session.get(ChecklistSettings, 1)
+    logic.configure(time.fromisoformat(s.start_time), time.fromisoformat(s.deadline_time),
+                    s.remind_every_min, s.points)
 
 ADMIN = "admin"
 

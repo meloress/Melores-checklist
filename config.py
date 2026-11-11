@@ -9,11 +9,7 @@ class Settings(BaseSettings):
     database_url: str
     port: int = 8080
     miniapp_base_url: str = ""
-    # Kun jadvali (Toshkent, HH:MM). Standart — rahbar talabi; lokal sinovda
-    # .env orqali "hozirdan 10 daqiqa" qilib qo'yish mumkin.
-    checklist_start: str = "19:00"
-    checklist_deadline: str = "21:00"
-    checklist_remind_every_min: int = 30
+    # Kun jadvali (19:00/21:00/30 daq) va ball variantlari — bazada, Mini App Sozlamalarida.
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parent / ".env",

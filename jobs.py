@@ -1,4 +1,5 @@
-"""Boshlanishdan (19:00) har 30 daqiqada eslatma, muddatda (21:00) jarima + yig'ma hisobot."""
+"""Boshlanishdan (standart 19:00) har N daqiqada eslatma, muddatda (21:00) jarima + yig'ma
+hisobot. Vaqtlar Sozlamalarda o'zgaradi — reschedule() cron'larni qayta quradi."""
 
 import asyncio
 import logging
@@ -14,7 +15,8 @@ from sqlalchemy import func, or_, select
 
 from config import settings
 from db import ChecklistDay, ChecklistViewer, Employee, async_session
-from logic import (BLOCKED, DEADLINE_TXT, DELIVERED, MESSAGE_LIMIT, MONTHS, NEVER_STARTED, NOT_SENT, digest_block,
+import logic
+from logic import (BLOCKED, DELIVERED, MESSAGE_LIMIT, MONTHS, NEVER_STARTED, NOT_SENT, digest_block,
                    digest_summary, fmt_ball, fmt_day, is_past_deadline, local_now, penalty_for)
 import service
 
@@ -22,6 +24,19 @@ logger = logging.getLogger(__name__)
 SEND_GAP = 0.05  # Telegram: ~30 xabar/soniya
 
 START_KB = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="▶️ Boshlash", callback_data="cl:start")]])
+SCHEDULER = None  # main.py o'rnatadi
+
+
+def reschedule(bot: Bot) -> None:
+    """Eslatma va kun yopish cron'larini joriy jadvalga moslaydi."""
+    for job in SCHEDULER.get_jobs():
+        if job.id.startswith("cl-"):
+            job.remove()
+    for t in logic.reminder_times():
+        SCHEDULER.add_job(remind, "cron", hour=t.hour, minute=t.minute, args=[bot], misfire_grace_time=600,
+                          id=f"cl-remind-{t:%H%M}")
+    SCHEDULER.add_job(close_today, "cron", hour=logic.DEADLINE.hour, minute=logic.DEADLINE.minute, args=[bot],
+                      misfire_grace_time=3600, id="cl-close")
 
 
 async def send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
@@ -79,9 +94,9 @@ async def remind(bot: Bot) -> None:
             if done == 0:
                 at_risk = penalty_for(questions, answers, rate)
                 text = (f"📝 <b>Bugungi savollar</b>: {len(questions)} ta.\n"
-                        f"Soat {DEADLINE_TXT} gacha javob bering — javob bermasangiz jami {fmt_ball(-at_risk)} ball.")
+                        f"Soat {logic.DEADLINE_TXT} gacha javob bering — javob bermasangiz jami {fmt_ball(-at_risk)} ball.")
             else:
-                text = f"⏰ Eslatma: {done}/{len(questions)} savolga javob berdingiz. {DEADLINE_TXT} gacha tugating."
+                text = f"⏰ Eslatma: {done}/{len(questions)} savolga javob berdingiz. {logic.DEADLINE_TXT} gacha tugating."
             try:
                 if await send(bot, emp.telegram_id, text, reply_markup=START_KB):
                     await service.mark_delivered(session, emp.id, day)
@@ -140,7 +155,7 @@ async def close_day(bot: Bot, day: date) -> None:
                 cl, other, _ = await service.month_breakdown(session, emp.id)
                 notices.append((emp.telegram_id,
                     f"⚠️ Sizga jarima yozildi: <b>{fmt_ball(-penalty)} ball</b>\n"
-                    f"Sabab: {fmt_day(day)} dagi {len(questions) - answered} ta savolga {DEADLINE_TXT} gacha javob berilmadi.\n"
+                    f"Sabab: {fmt_day(day)} dagi {len(questions) - answered} ta savolga {logic.DEADLINE_TXT} gacha javob berilmadi.\n"
                     + (f"Har {bps} ball uchun oylik kuni 1 kun kechikadi.\n" if bps else "")
                     + f"\n{MONTHS[local_now().month]}: checklist {fmt_ball(-cl)}, muddat va boshqa {fmt_ball(-other)}."
                     + (f"\nOylik kuni: {fmt_day(pay_day)}" if pay_day else "")))

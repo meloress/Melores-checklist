@@ -14,7 +14,8 @@ from aiogram.types import CallbackQuery, Message
 
 from db import ChecklistQuestion, async_session
 from jobs import START_KB, send, set_menu
-from logic import DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_real_answer, local_now, open_day
+import logic
+from logic import MONTHS, fmt_ball, fmt_day, is_real_answer, local_now, open_day
 import service
 
 router = Router()
@@ -33,7 +34,7 @@ async def _ask_next(message: Message, telegram_id: int, day: date | None = None)
             await message.answer(NOT_REGISTERED)
             return
         if day is None:
-            await message.answer(f"Savollar bo'lsa, soat {START_TXT} da keladi.")
+            await message.answer(f"Savollar bo'lsa, soat {logic.START_TXT} da keladi.")
             return
         questions, answers = await service.progress(session, emp.id, day)
         nxt = service.next_unanswered(questions, answers)
@@ -70,7 +71,7 @@ async def start(message: Message) -> None:
     await set_menu(message.bot, message.chat.id, allowed is None or bool(allowed))
     await message.answer(
         f"Assalomu alaykum, {escape(emp.full_name)}!\n"
-        f"Rahbar savol yozsa, u soat {START_TXT} da keladi — {DEADLINE_TXT} gacha javob berasiz.\n"
+        f"Rahbar savol yozsa, u soat {logic.START_TXT} da keladi — {logic.DEADLINE_TXT} gacha javob berasiz.\n"
         "Balingizni ko'rish: /ball",
         parse_mode="HTML",
         reply_markup=START_KB if pending else None,

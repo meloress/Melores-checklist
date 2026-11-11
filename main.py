@@ -8,9 +8,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import jobs
 import webapp
 from config import settings
-from db import init_db
+import service
+from db import async_session, init_db
 from handlers import router
-from logic import DEADLINE, TZ, reminder_times
+from logic import TZ
 
 TRELLO_BOTS = {"melorestrellobot"}  # production Trello bot — bu token bilan ishlamaymiz
 
@@ -26,20 +27,19 @@ async def main() -> None:
     logging.info("Checklist bot: @%s", me.username)
 
     await init_db()
+    async with async_session() as session:
+        await service.load_schedule(session)
     dp = Dispatcher()
     dp.include_router(router)
 
     await bot.set_my_commands([BotCommand(command="start", description="Boshlash"),
                                BotCommand(command="ball", description="Oylik ball va jarimalar")])
     if settings.miniapp_base_url:
-        menu_task = asyncio.create_task(jobs.sync_menus(bot))  # noqa: F841 (havola — GC o'chirmasin)  # Panel faqat admin/rahbar/nazoratchiga
+        menu_task = asyncio.create_task(jobs.sync_menus(bot))  # noqa: F841 (havola: GC o'chirmasin). Panel faqat admin/rahbar/nazoratchiga
 
-    scheduler = AsyncIOScheduler(timezone=TZ)
-    for t in reminder_times():
-        scheduler.add_job(jobs.remind, "cron", hour=t.hour, minute=t.minute, args=[bot], misfire_grace_time=600)
-    scheduler.add_job(jobs.close_today, "cron", hour=DEADLINE.hour, minute=DEADLINE.minute, args=[bot],
-                      misfire_grace_time=3600)
-    scheduler.start()
+    jobs.SCHEDULER = AsyncIOScheduler(timezone=TZ)
+    jobs.reschedule(bot)
+    jobs.SCHEDULER.start()
 
     try:
         await jobs.catch_up(bot)

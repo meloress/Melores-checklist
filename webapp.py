@@ -10,7 +10,7 @@ import hmac
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, time as dtime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -20,8 +20,10 @@ from sqlalchemy import case, delete, func, or_, select
 from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
                 Employee, async_session)
+import jobs
 from jobs import send, sync_menus
-from logic import (DEADLINE_TXT, MONTHS, POINTS, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
+import logic
+from logic import (MONTHS, fmt_ball, fmt_day, is_locked, local_now, question_day,
                    reminder_times)
 import service
 
@@ -93,12 +95,13 @@ async def _body(request) -> dict:
     return data
 
 
-def _points(data: dict) -> float:
+def _points(data: dict, current: float | None = None) -> float:
+    """Sozlamadagi variantlardan biri; tahrirda savolning hozirgi balli ham (variant olib tashlangan bo'lsa)."""
     try:
-        p = round(float(data.get("points", POINTS[0])), 2)
+        p = round(float(data.get("points", logic.POINTS[0])), 2)
     except (TypeError, ValueError):
         p = None
-    if p not in POINTS:
+    if p not in logic.POINTS and (p is None or p != current):
         raise web.HTTPBadRequest(text='{"error":"points"}', content_type="application/json")
     return p
 
@@ -126,7 +129,7 @@ async def me(request):
     m = request["me"]
     return web.json_response({"id": m.id, "full_name": m.full_name, "role": m.role,
                               "is_admin": m.role == service.ADMIN,
-                              "is_leader": m.role != service.ADMIN and request["scope"] is None, "start": START_TXT, "deadline": DEADLINE_TXT,
+                              "is_leader": m.role != service.ADMIN and request["scope"] is None, "start": logic.START_TXT, "deadline": logic.DEADLINE_TXT, "points": list(logic.POINTS),
                               "bot_username": request.config_dict.get("bot_username", ""),
                               "reminders": [t.strftime("%H:%M") for t in reminder_times()[1:]]})
 
@@ -320,10 +323,10 @@ async def _own_question(request, session) -> ChecklistQuestion:
 @routes.put("/api/questions/{id:\\d+}")
 async def edit_question(request):
     data = await _body(request)
-    text, points = _text(data), _points(data)
+    text = _text(data)
     async with async_session() as session:
         q = await _own_question(request, session)
-        q.text, q.points = text, points
+        q.text, q.points = text, _points(data, q.points)
         await session.commit()
     return web.json_response({"id": q.id, "text": q.text, "points": q.points})
 
@@ -453,28 +456,66 @@ def _refresh_menus(request) -> None:
 _BG: set = set()  # fon vazifalariga havola (GC o'chirmasin)
 
 
+def _settings_json(s: ChecklistSettings) -> dict:
+    return {"penalty_per_question": s.penalty_per_question, "start_time": s.start_time,
+            "deadline_time": s.deadline_time, "remind_every_min": s.remind_every_min, "points": list(s.points)}
+
+
+def _bad(key: str):
+    return web.HTTPBadRequest(text=f'{{"error":"{key}"}}', content_type="application/json")
+
+
 @routes.get("/api/settings")
 async def get_settings(request):
     _require_admin(request)
     async with async_session() as session:
-        return web.json_response({"penalty_per_question": await service.penalty_rate(session)})
+        return web.json_response(_settings_json(await session.get(ChecklistSettings, 1)))
 
 
 @routes.put("/api/settings")
 async def put_settings(request):
+    """Hamma sozlama bitta formadan; yuborilmagan maydon o'zgarmaydi."""
     _require_admin(request)
-    try:
-        rate = round(float((await _body(request))["penalty_per_question"]), 2)
-    except (KeyError, TypeError, ValueError):
-        raise web.HTTPBadRequest(text='{"error":"penalty"}', content_type="application/json")
-    if not 0 <= rate <= 10:
-        raise web.HTTPBadRequest(text='{"error":"penalty_range"}', content_type="application/json")
+    data = await _body(request)
     async with async_session() as session:
         s = await session.get(ChecklistSettings, 1)
+        try:
+            rate = round(float(data.get("penalty_per_question", s.penalty_per_question)), 2)
+        except (TypeError, ValueError):
+            raise _bad("penalty")
+        if not 0 <= rate <= 10:
+            raise _bad("penalty_range")
+        try:
+            start = dtime.fromisoformat(str(data.get("start_time", s.start_time)))
+            deadline = dtime.fromisoformat(str(data.get("deadline_time", s.deadline_time)))
+            every = data.get("remind_every_min", s.remind_every_min)
+            points = data.get("points", s.points)
+            if not isinstance(every, int) or isinstance(every, bool) or not isinstance(points, list):
+                raise ValueError("bad_json")
+            start, deadline, every, points = logic.check_schedule(start.replace(second=0, microsecond=0),
+                                                            deadline.replace(second=0, microsecond=0), every, points)
+        except ValueError as exc:
+            raise _bad(str(exc) if str(exc) in ("schedule_order", "remind_every", "points_list") else "time")
+        new_times = (start.strftime("%H:%M"), deadline.strftime("%H:%M"), every)
+        if new_times != (s.start_time, s.deadline_time, s.remind_every_min):
+            # Savollar ketib, javob kutilayotgan paytda jadvalni o'zgartirish bugungi kunni buzadi.
+            now_t = local_now().time()
+            if logic.WINDOW_START <= now_t < logic.DEADLINE:
+                raise web.HTTPConflict(text='{"error":"window_open"}', content_type="application/json")
         s.penalty_per_question = rate
+        s.start_time, s.deadline_time, s.remind_every_min = new_times
+        s.points = list(points)
         await session.commit()
-    logger.info("checklist jarima %s ga o'zgartirildi (xodim %s)", rate, request["me"].id)
-    return web.json_response({"penalty_per_question": rate})
+        await service.load_schedule(session)
+        result = _settings_json(s)
+    logger.info("checklist sozlamalari o'zgardi: %s (xodim %s)", result, request["me"].id)
+    bot = request.config_dict.get("bot")
+    if bot is not None and jobs.SCHEDULER is not None:
+        jobs.reschedule(bot)
+        task = asyncio.create_task(jobs.catch_up(bot))  # muddat oldinga surilgan bo'lsa — kunni yopadi
+        _BG.add(task)
+        task.add_done_callback(_BG.discard)
+    return web.json_response(result)
 
 
 async def _index(request):
