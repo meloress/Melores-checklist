@@ -13,7 +13,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from db import ChecklistQuestion, async_session
-from jobs import START_KB, send
+from jobs import START_KB, send, set_menu
 from logic import DEADLINE_TXT, MONTHS, START_TXT, fmt_ball, fmt_day, is_real_answer, local_now, open_day
 import service
 
@@ -65,7 +65,9 @@ async def start(message: Message) -> None:
             pending = service.next_unanswered(questions, answers) is not None
             if pending:
                 await service.mark_delivered(session, emp.id, day)
+        allowed = await service.scope(session, emp)
         await session.commit()
+    await set_menu(message.bot, message.chat.id, allowed is None or bool(allowed))
     await message.answer(
         f"Assalomu alaykum, {escape(emp.full_name)}!\n"
         f"Rahbar savol yozsa, u soat {START_TXT} da keladi — {DEADLINE_TXT} gacha javob berasiz.\n"

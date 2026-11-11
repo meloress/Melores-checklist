@@ -22,7 +22,7 @@ const ROLE_ICONS = {
 };
 const ERRORS = {
   not_registered: "Siz tizimda ro'yxatdan o'tmagansiz.",
-  forbidden: "Bu panel faqat boshliq va nazoratchilar uchun.",
+  forbidden: "Bu panel faqat admin belgilagan xodimlar uchun.",
   admin_only: "Faqat admin uchun.",
   unauthorized: "Ilovani Telegram ichidan oching.",
   text_length: "Savol matni 1–1000 belgi bo'lishi kerak.",
@@ -44,7 +44,7 @@ function tabDefs() {
     { key: "home", icon: icon("home"), label: "Bosh sahifa", screen: screenHome },
     { key: "employees", icon: icon("users"), label: "Xodimlar", screen: screenEmployees },
   ];
-  if (state.me.is_admin) tabs.push({ key: "viewers", icon: icon("chart"), label: "Nazoratchilar", screen: screenViewers });
+  if (state.me.is_admin) tabs.push({ key: "viewers", icon: icon("chart"), label: "Rahbarlar", screen: screenViewers });
   tabs.push({ key: "profile", icon: icon("user"), label: "Profil", screen: screenProfile });
   return tabs;
 }
@@ -658,7 +658,15 @@ async function screenViewers() {
   loading();
   const data = await api("/viewers");
   setScreen(`
-    <p class="page-title">Nazoratchilar (${data.viewers.length})</p>
+    <p class="page-title">Rahbarlar (${data.leaders.length})</p>
+    <p class="page-sub">Rahbar hamma xodimni ko'radi, savol yozadi va ${state.me.deadline} da to'liq yig'ma oladi. Sozlama, jarimani bekor qilish, rahbar/nazoratchi tayinlash — faqat adminda.</p>
+    ${data.leaders.map((l) => `
+      <div class="fin-card">
+        <div class="top"><span class="task">${esc(l.full_name)}</span></div>
+        <div class="member-actions"><button data-unlead="${l.id}">Rahbarlikdan olish</button></div>
+      </div>`).join("")}
+    <button class="nav-card" id="add-leader"><span class="ic">${icon("users")}</span><span class="grow">Rahbar qo'shish</span><span class="chev">›</span></button>
+    <p class="page-title" style="margin-top:18px">Nazoratchilar (${data.viewers.length})</p>
     <p class="page-sub">Nazoratchi faqat o'ziga biriktirilgan xodimlarning javoblarini ko'radi, savollarini tahrirlaydi va har kuni ${state.me.deadline} da yig'ma oladi. Admin hammasini ko'radi.</p>
     ${data.viewers.length ? data.viewers.map((v, i) => `
       <button class="emp-row" data-i="${i}">
@@ -671,16 +679,29 @@ async function screenViewers() {
   root.querySelectorAll(".emp-row").forEach((el) => {
     el.onclick = () => show(screenViewerEdit, data.viewers[Number(el.dataset.i)].id);
   });
-  setMainButton("➕ Nazoratchi qo'shish", () => show(screenViewerPick), ACCENT);
+  root.querySelector("#add-leader").onclick = () => show(screenViewerPick, true);
+  root.querySelectorAll("[data-unlead]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!(await confirmAction("Rahbarlikdan olinsinmi? Panel unga endi ko'rinmaydi."))) return;
+      try {
+        await api(`/leaders/${btn.dataset.unlead}`, { method: "PUT", body: JSON.stringify({ on: false }) });
+        await replaceTop(screenViewers);
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+  });
+  setMainButton("➕ Nazoratchi qo'shish", () => show(screenViewerPick, false), ACCENT);
 }
 
-async function screenViewerPick() {
+/* leader=true — rahbar tanlash (bosilganda darhol qo'shiladi), aks holda nazoratchi. */
+async function screenViewerPick(leader) {
   loading();
   const data = await api("/viewers");
-  const taken = new Set(data.viewers.map((v) => v.id));
+  const taken = new Set((leader ? data.leaders : data.viewers).map((v) => v.id));
   const candidates = data.employees.filter((e) => !taken.has(e.id) && e.role !== "admin");
   setScreen(`
-    <p class="page-title">Nazoratchi tanlang</p>
+    <p class="page-title">${leader ? "Rahbar" : "Nazoratchi"} tanlang</p>
     <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
     ${candidates.map((e, i) => `
       <button class="emp-row" data-i="${i}" data-name="${esc(e.full_name.toLowerCase())}">
@@ -691,7 +712,16 @@ async function screenViewerPick() {
   `);
   bindSearch();
   root.querySelectorAll(".emp-row").forEach((el) => {
-    el.onclick = () => replaceTop(screenViewerEdit, candidates[Number(el.dataset.i)].id);
+    const id = candidates[Number(el.dataset.i)].id;
+    el.onclick = async () => {
+      if (!leader) return replaceTop(screenViewerEdit, id);
+      try {
+        await api(`/leaders/${id}`, { method: "PUT", body: JSON.stringify({ on: true }) });
+        await goBack();
+      } catch (err) {
+        showError(err.message);
+      }
+    };
   });
 }
 
@@ -737,7 +767,7 @@ async function screenProfile() {
     <div class="profile-head">
       <div class="avatar-circle">${esc(initials)}</div>
       <p class="greet" style="margin:2px 0 0">${esc(me.full_name)}</p>
-      <p class="greet-wave" style="margin:0">${esc(ROLE_LABELS[me.role] || me.role)}${me.is_admin ? "" : " · nazoratchi"}</p>
+      <p class="greet-wave" style="margin:0">${esc(ROLE_LABELS[me.role] || me.role)}${me.is_admin ? "" : me.is_leader ? " · rahbar" : " · nazoratchi"}</p>
     </div>
     <div class="panel">
       <div class="kv-row"><span class="k">Savollar keladi</span><span class="v">${state.me.start}</span></div>

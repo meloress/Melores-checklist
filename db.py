@@ -151,6 +151,8 @@ class ChecklistSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)  # doim 1
     penalty_per_question: Mapped[float] = mapped_column(Numeric(4, 2, asdecimal=False), default=0.2)
+    # Rahbarlar: admin belgilaydi; hamma xodimni ko'radi, sozlama/jarima bekor qilish — yo'q.
+    leader_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list, server_default="{}")
 
 
 OWN_TABLES = [m.__table__ for m in (ChecklistQuestion, ChecklistAnswer, ChecklistViewer,
@@ -168,6 +170,7 @@ _ADDED_COLUMNS = [
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS cancelled_at timestamptz",
     "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS points numeric(4,2)",
     "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS reader_ids integer[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE checklist_settings ADD COLUMN IF NOT EXISTS leader_ids integer[] NOT NULL DEFAULT '{}'",
 ]
 
 

@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import jobs
@@ -32,8 +32,7 @@ async def main() -> None:
     await bot.set_my_commands([BotCommand(command="start", description="Boshlash"),
                                BotCommand(command="ball", description="Oylik ball va jarimalar")])
     if settings.miniapp_base_url:
-        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
-            text="Panel", web_app=WebAppInfo(url=settings.miniapp_base_url)))
+        menu_task = asyncio.create_task(jobs.sync_menus(bot))  # noqa: F841 (havola — GC o'chirmasin)  # Panel faqat admin/rahbar/nazoratchiga
 
     scheduler = AsyncIOScheduler(timezone=TZ)
     for t in reminder_times():

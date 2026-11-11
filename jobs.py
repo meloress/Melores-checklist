@@ -8,8 +8,9 @@ from html import unescape
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from sqlalchemy import func, select
+from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonDefault, MenuButtonWebApp,
+                           WebAppInfo)
+from sqlalchemy import func, or_, select
 
 from config import settings
 from db import ChecklistDay, ChecklistViewer, Employee, async_session
@@ -38,6 +39,32 @@ async def send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
         return True
     finally:
         await asyncio.sleep(SEND_GAP)
+
+
+async def set_menu(bot: Bot, chat_id: int, on: bool) -> None:
+    """"Panel" tugmasi faqat admin/rahbar/nazoratchiga; qolganlarga oddiy menyu."""
+    if not settings.miniapp_base_url:
+        return
+    button = (MenuButtonWebApp(text="Panel", web_app=WebAppInfo(url=settings.miniapp_base_url)) if on
+              else MenuButtonDefault())
+    try:
+        await bot.set_chat_menu_button(chat_id=chat_id, menu_button=button)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass  # botni hali ochmagan — /start bosganda o'rnatiladi
+    await asyncio.sleep(SEND_GAP)
+
+
+async def sync_menus(bot: Bot) -> None:
+    """Hamma xodimning menyu tugmasini huquqiga moslaydi (ishga tushishda va
+    admin rahbar/nazoratchini o'zgartirganda)."""
+    try:
+        await bot.set_chat_menu_button(menu_button=MenuButtonDefault())  # umumiy: Panel yo'q
+        async with async_session() as session:
+            chats = await service.panel_chats(session)
+        for chat_id, on in chats:
+            await set_menu(bot, chat_id, on)
+    except Exception:
+        logger.exception("menyu tugmalari yangilanmadi")
 
 
 async def remind(bot: Bot) -> None:
@@ -126,8 +153,11 @@ async def close_day(bot: Bot, day: date) -> None:
 
         if not blocks:
             return
+        # Admin va rahbarlar — hamma xodimning yig'masi.
+        leaders = await service.leader_ids(session)
         admins = list(await session.scalars(select(Employee).where(
-            Employee.role == service.ADMIN, Employee.is_active.is_(True), Employee.telegram_id.is_not(None))))
+            or_(Employee.role == service.ADMIN, Employee.id.in_(leaders)),
+            Employee.is_active.is_(True), Employee.telegram_id.is_not(None))))
         viewer_rows = list(await session.execute(select(ChecklistViewer.viewer_id, ChecklistViewer.employee_id)))
         viewers = {v.id: v for v in await session.scalars(select(Employee).where(
             Employee.id.in_({r.viewer_id for r in viewer_rows}), Employee.is_active.is_(True),

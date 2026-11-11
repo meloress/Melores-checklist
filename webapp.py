@@ -4,6 +4,7 @@ Huquq: admin — hamma xodim + nazoratchilar + sozlama; nazoratchi — faqat
 admin unga biriktirgan xodimlar (savollarini tahrirlaydi, javoblarini ko'radi).
 Boshqa xodimlarga 403."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -19,7 +20,7 @@ from sqlalchemy import case, delete, func, or_, select
 from config import settings
 from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSettings, ChecklistViewer,
                 Employee, async_session)
-from jobs import send
+from jobs import send, sync_menus
 from logic import (DEADLINE_TXT, MONTHS, POINTS, START_TXT, fmt_ball, fmt_day, is_locked, local_now, question_day,
                    reminder_times)
 import service
@@ -124,7 +125,8 @@ routes = web.RouteTableDef()
 async def me(request):
     m = request["me"]
     return web.json_response({"id": m.id, "full_name": m.full_name, "role": m.role,
-                              "is_admin": m.role == service.ADMIN, "start": START_TXT, "deadline": DEADLINE_TXT,
+                              "is_admin": m.role == service.ADMIN,
+                              "is_leader": m.role != service.ADMIN and request["scope"] is None, "start": START_TXT, "deadline": DEADLINE_TXT,
                               "bot_username": request.config_dict.get("bot_username", ""),
                               "reminders": [t.strftime("%H:%M") for t in reminder_times()[1:]]})
 
@@ -385,6 +387,7 @@ async def viewers(request):
         rows = (await session.execute(select(ChecklistViewer.viewer_id, ChecklistViewer.employee_id))).all()
         emps = list(await session.scalars(
             select(Employee).where(Employee.is_active.is_(True)).order_by(Employee.full_name)))
+        leaders = await service.leader_ids(session)
     by_viewer: dict[int, list[int]] = {}
     for v, e in rows:
         by_viewer.setdefault(v, []).append(e)
@@ -392,6 +395,8 @@ async def viewers(request):
     return web.json_response({
         "viewers": [{"id": v, "full_name": names.get(v, "?"), "employee_ids": ids}
                     for v, ids in by_viewer.items() if v in names],
+        "leaders": [{"id": i, "full_name": names[i]} for i in sorted(leaders, key=lambda i: names.get(i, ""))
+                    if i in names],
         "employees": [{"id": e.id, "full_name": e.full_name, "role": e.role} for e in emps],
     })
 
@@ -411,7 +416,41 @@ async def set_viewer(request):
         await session.execute(delete(ChecklistViewer).where(ChecklistViewer.viewer_id == viewer_id))
         session.add_all(ChecklistViewer(viewer_id=viewer_id, employee_id=e) for e in valid if e != viewer_id)
         await session.commit()
+    _refresh_menus(request)
     return web.json_response({"ok": True})
+
+
+@routes.put("/api/leaders/{id:\\d+}")
+async def set_leader(request):
+    """Rahbar qilish / olib tashlash: {"on": true|false}. Faqat admin."""
+    _require_admin(request)
+    emp_id = int(request.match_info["id"])
+    on = (await _body(request)).get("on")
+    if not isinstance(on, bool):
+        raise web.HTTPBadRequest(text='{"error":"bad_json"}', content_type="application/json")
+    async with async_session() as session:
+        emp = await session.get(Employee, emp_id)
+        if emp is None or not emp.is_active:
+            raise web.HTTPNotFound()
+        s = await session.get(ChecklistSettings, 1)
+        ids = set(s.leader_ids or [])
+        s.leader_ids = sorted(ids | {emp_id} if on else ids - {emp_id})
+        await session.commit()
+    logger.info("checklist rahbar %s: %s (admin %s)", "qo'shildi" if on else "olindi", emp_id, request["me"].id)
+    _refresh_menus(request)
+    return web.json_response({"ok": True})
+
+
+def _refresh_menus(request) -> None:
+    """Panel tugmasini kimga ko'rsatish o'zgardi — fonda hammasini moslaymiz."""
+    bot = request.config_dict.get("bot")
+    if bot is not None:
+        task = asyncio.create_task(sync_menus(bot))
+        _BG.add(task)
+        task.add_done_callback(_BG.discard)
+
+
+_BG: set = set()  # fon vazifalariga havola (GC o'chirmasin)
 
 
 @routes.get("/api/settings")

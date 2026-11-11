@@ -121,12 +121,26 @@ async def viewer_ids_of(session, viewer_id: int) -> set[int]:
     ))
 
 
+async def leader_ids(session) -> set[int]:
+    s = await session.get(ChecklistSettings, 1)
+    return set(s.leader_ids or []) if s else set()
+
+
 async def scope(session, employee: Employee) -> set[int] | None:
-    """Mini App huquqi: None = hammasi (admin), to'plam = faqat shu xodimlar
-    (nazoratchi), bo'sh to'plam = ruxsat yo'q."""
-    if employee.role == ADMIN:
+    """Mini App huquqi: None = hammasi (admin, rahbar), to'plam = faqat shu
+    xodimlar (nazoratchi), bo'sh to'plam = ruxsat yo'q (Mini App ham ko'rinmaydi)."""
+    if employee.role == ADMIN or employee.id in await leader_ids(session):
         return None
     return await viewer_ids_of(session, employee.id)
+
+
+async def panel_chats(session) -> list[tuple[int, bool]]:
+    """(telegram_id, Panel ko'rinsinmi) — Telegram'ga ulangan hamma faol xodim."""
+    emps = list(await session.scalars(select(Employee).where(
+        Employee.is_active.is_(True), Employee.telegram_id.is_not(None))))
+    leaders = await leader_ids(session)
+    viewers = set(await session.scalars(select(ChecklistViewer.viewer_id)))
+    return [(e.telegram_id, e.role == ADMIN or e.id in leaders or e.id in viewers) for e in emps]
 
 
 async def write_penalty(session, employee: Employee, score: float, reason: str) -> tuple[int, date]:
