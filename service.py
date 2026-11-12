@@ -129,6 +129,15 @@ async def viewer_ids_of(session, viewer_id: int) -> set[int]:
     ))
 
 
+async def attach_to_viewers(session, employee_ids) -> None:
+    """Yangi xodim hamma nazoratchining ro'yxatiga tushadi — aks holda admin uni
+    qo'shgani bilan nazoratchida ko'rinmaydi. Kerakmasini admin keyin olib tashlaydi."""
+    viewers = set(await session.scalars(select(ChecklistViewer.viewer_id)))
+    rows = [{"viewer_id": v, "employee_id": e} for v in viewers for e in employee_ids if v != e]
+    if rows:
+        await session.execute(pg_insert(ChecklistViewer).values(rows).on_conflict_do_nothing())
+
+
 async def leader_ids(session) -> set[int]:
     s = await session.get(ChecklistSettings, 1)
     return set(s.leader_ids or []) if s else set()

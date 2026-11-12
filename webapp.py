@@ -327,6 +327,8 @@ async def add_employee(request):
             raise web.HTTPConflict(text='{"error":"phone_taken"}', content_type="application/json")
         emp = Employee(full_name=name, phone=phone, role=role)
         session.add(emp)
+        await session.flush()
+        await service.attach_to_viewers(session, [emp.id])
         await session.commit()
     logger.info("checklist xodim qo'shildi: %s (admin %s)", emp.id, request["me"].id)
     return web.json_response({"id": emp.id})
@@ -376,7 +378,7 @@ async def trello_candidates(request):
 async def trello_import(request):
     _require_admin(request)
     ids = _ids(await _body(request), "trello_ids", allow_empty=False)
-    added = 0
+    new = []
     async with async_session() as session:
         taken = set(await session.scalars(select(Employee.trello_employee_id).where(
             Employee.trello_employee_id.in_(ids))))
@@ -385,14 +387,16 @@ async def trello_import(request):
                                                                    TrelloEmployee.is_active.is_(True))):
             if t.id in taken:
                 continue
-            session.add(Employee(trello_employee_id=t.id, full_name=t.full_name, phone=t.phone_number,
-                                 role=t.role if t.role in ROLES else "worker",
-                                 telegram_id=t.telegram_id if t.telegram_id not in tg_taken else None))
-            added += 1
+            new.append(Employee(trello_employee_id=t.id, full_name=t.full_name, phone=t.phone_number,
+                                role=t.role if t.role in ROLES else "worker",
+                                telegram_id=t.telegram_id if t.telegram_id not in tg_taken else None))
+        session.add_all(new)
+        await session.flush()
+        await service.attach_to_viewers(session, [e.id for e in new])
         await session.commit()
-    logger.info("checklist: Trello'dan %s xodim import qilindi (admin %s)", added, request["me"].id)
+    logger.info("checklist: Trello'dan %s xodim import qilindi (admin %s)", len(new), request["me"].id)
     _refresh_menus(request)
-    return web.json_response({"count": added})
+    return web.json_response({"count": len(new)})
 
 
 @routes.post("/api/questions")
