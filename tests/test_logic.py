@@ -15,7 +15,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost:1/x")
 
 from datetime import time  # noqa: E402
 
-from logic import (BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, digest_summary, is_real_answer,  # noqa: E402
+from logic import (applies, BLOCKED, DELIVERED, NEVER_STARTED, NOT_SENT, digest_block, digest_summary, is_real_answer,  # noqa: E402
                    fmt_ball, is_locked, is_past_deadline, open_day, payment_date, penalty_for, question_day,
                    reminder_times, window_start_utc)
 from webapp import verify_init_data  # noqa: E402
@@ -88,6 +88,11 @@ assert question_day(utc(2026, 11, 10, 19, 30)) == date(2026, 11, 11)  # 00:30 er
 assert not is_locked(date(2026, 11, 10), utc(2026, 11, 10, 13, 59))
 assert is_locked(date(2026, 11, 10), utc(2026, 11, 10, 14))
 assert not is_locked(date(2026, 11, 11), utc(2026, 11, 10, 15))  # ertangi savol hali ochiq
+# Savol har kuni takrorlanadi: boshlanish..tugash kuni oralig'ida (service.on_day bilan bir xil)
+assert applies(date(2026, 11, 12), None, date(2026, 11, 30))
+assert not applies(date(2026, 11, 12), None, date(2026, 11, 11))
+assert applies(date(2026, 11, 12), date(2026, 11, 14), date(2026, 11, 14))
+assert not applies(date(2026, 11, 12), date(2026, 11, 14), date(2026, 11, 15))
 
 # Qisqa yig'ma: to'liq javob berganlar soni, jami jarima, faqat to'liq emaslar ro'yxatda
 s = digest_summary("H", [("Ali", 2, 2, 0, DELIVERED), ("Vali <x>", 1, 3, 0.4, DELIVERED),

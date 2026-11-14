@@ -422,7 +422,7 @@ async function screenBulkQuestion(preselectId) {
       <textarea id="f-text" maxlength="1000" placeholder="Masalan: Bugun qaysi mijozlarga qo'ng'iroq qildingiz?"></textarea>
     </div>
     <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(state.me.points[0])}</div>
-    <p class="hint">Kun davomida yozilgani bugun ${state.me.start} da, ${state.me.start} dan keyin yozilgani ertaga ${state.me.start} da yuboriladi.</p>
+    <p class="hint">Savol har kuni ${state.me.start} da takrorlanadi, o'chirmaguningizcha. Kun davomida yozilgani bugundan, ${state.me.start} dan keyin yozilgani ertadan boshlanadi.</p>
     <div class="field"><input id="f-search" placeholder="Ism bo'yicha qidirish..." /></div>
     <p class="section-lbl">Kim javob beradi · tanlangan: <b id="cnt-ans">0</b></p>
     ${pickerHtml(employees, "ans", pre)}
@@ -442,7 +442,7 @@ async function screenBulkQuestion(preselectId) {
     try {
       const r = await api("/questions", { method: "POST", body: JSON.stringify({
         text, employee_ids: ids, reader_ids: readers(), points: points() }) });
-      showError(`${r.count} ta xodimga yozildi — ${r.day} ${state.me.start} da yuboriladi.`);
+      showError(`${r.count} ta xodimga yozildi — ${r.day} ${state.me.start} dan boshlab har kuni yuboriladi.`);
       await goBack();
     } catch (err) {
       showError(err.message);
@@ -491,7 +491,7 @@ async function screenEmployeeDetail(employeeId) {
         ${e.trello.pay_day ? `<div class="kv-row"><span class="k">Oylik kuni</span><span class="v">${esc(e.trello.pay_day)}</span></div>` : ""}
       </div>` : `<p class="hint">Faqat checklist xodimi — Trello botda yo'q, umumiy ball va oylik kuni yuritilmaydi.</p>`}
     ${state.me.is_admin ? `<button class="nav-card" id="emp-edit"><span class="ic">${icon("settings")}</span><span class="grow">Xodimni tahrirlash</span><span class="chev">›</span></button>` : ""}
-    <p class="section-lbl">${esc(cap(e.target_label))} ${state.me.start} · navbatdagi savollar</p>
+    <p class="section-lbl">Har kungi savollar · ${esc(e.target_label)} ${state.me.start} dan</p>
     ${e.queued.length ? e.queued.map((q, i) => `
       <div class="fin-card" data-qid="${q.id}">
         <div class="top"><span class="task">${i + 1}. ${esc(q.text)}</span></div>
@@ -503,7 +503,7 @@ async function screenEmployeeDetail(employeeId) {
         </div>
       </div>
     `).join("") : `<p class="empty-state">Savol yo'q — yozmasangiz, ${esc(e.target_label)} unga hech narsa bormaydi.</p>`}
-    <p class="hint">Savollar bir martalik: ${state.me.start} da yuboriladi, keyin o'zgartirib bo'lmaydi. ${state.me.start} dan keyin yozilgani ertaga ketadi.</p>
+    <p class="hint">Savollar har kuni ${state.me.start} da takrorlanadi, o'chirmaguningizcha. ${state.me.start} dan keyin yozilgan, tahrirlangan yoki o'chirilgani ertadan kuchga kiradi.</p>
     <p class="section-lbl">Tarix · oxirgi 7 kun</p>
     ${e.days.length ? e.days.map((d) => dayPanelHtml(d)).join("") : `<p class="empty-state">Hali savol yuborilmagan</p>`}
   `);
@@ -722,7 +722,7 @@ async function screenQuestionForm(employeeId, question, targetLabel) {
       <textarea id="f-text" maxlength="1000">${esc(question.text)}</textarea>
     </div>
     <div class="field"><label>Muhimligi — javob berilmasa jarima</label>${pointsHtml(question.points ?? state.me.points[0])}</div>
-    <p class="hint">${esc(cap(targetLabel || "bugun"))} ${state.me.start} da yuboriladi. Xodim chatda matn bilan javob beradi.</p>
+    <p class="hint">O'zgarish ${esc(targetLabel || "bugun")} ${state.me.start} dan kuchga kiradi, o'tgan kunlar tarixi o'zgarmaydi. Xodim chatda matn bilan javob beradi.</p>
   `);
   const points = bindPoints();
   setMainButton("💾 Saqlash", async () => {

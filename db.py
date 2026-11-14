@@ -96,8 +96,11 @@ class ChecklistQuestion(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     employee_id: Mapped[int] = mapped_column(ForeignKey("checklist_employees.id", **_EMP_FK), index=True)
-    # Savol BIR MARTALIK: shu kuni 19:00 da yuboriladi (doimiy ro'yxat emas).
+    # Savol HAR KUNI takrorlanadi (2026-11-14, foydalanuvchi): `day` — birinchi
+    # yuboriladigan kun, `until_day` — oxirgi kun (o'chirilganda/tahrirlanganda
+    # qo'yiladi; NULL = hali davom etadi). Tarix shu oraliqdan tiklanadi.
     day: Mapped[date] = mapped_column(Date, index=True)
+    until_day: Mapped[date | None] = mapped_column(Date)
     text: Mapped[str] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
     # Javobsiz qolsa shuncha jarima (muhimlik: 0.2/0.5/0.7/1). NULL — eski savol, umumiy stavka.
@@ -206,6 +209,7 @@ _SPLIT_EMPLOYEES = [
 _ADDED_COLUMNS = [
     "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS day date",
     "CREATE INDEX IF NOT EXISTS ix_checklist_questions_day ON checklist_questions (day)",
+    "ALTER TABLE checklist_questions ADD COLUMN IF NOT EXISTS until_day date",
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS asking_question_id integer",
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS blocked_at timestamptz",
     "ALTER TABLE checklist_days ADD COLUMN IF NOT EXISTS kpi_log_id integer",

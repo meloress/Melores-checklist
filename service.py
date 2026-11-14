@@ -1,9 +1,9 @@
 """Bot, job va Mini App ishlatadigan baza so'rovlari. Har biri chaqiruvchining
 sessiyasida ishlaydi; commit'ni chaqiruvchi qiladi."""
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import (AppSetting, ChecklistAnswer, ChecklistDay, ChecklistMember, ChecklistQuestion,
@@ -27,15 +27,31 @@ async def employee_by_tg(session, telegram_id: int) -> Employee | None:
     )
 
 
+def on_day(day: date):
+    """Shu kuni yuboriladigan savollar sharti: savol har kuni takrorlanadi,
+    `day`..`until_day` oralig'ida (logic.applies bilan bir xil qoida)."""
+    q = ChecklistQuestion
+    return and_(q.is_active.is_(True), q.day <= day, or_(q.until_day.is_(None), q.until_day >= day))
+
+
 async def day_questions(session, employee_id: int, day: date) -> list[ChecklistQuestion]:
-    """Shu kunga yozilgan (bir martalik) faol savollar."""
+    """Shu kuni xodimga yuboriladigan savollar (har kungi ro'yxat)."""
     return list(await session.scalars(
         select(ChecklistQuestion)
-        .where(ChecklistQuestion.employee_id == employee_id,
-               ChecklistQuestion.is_active.is_(True),
-               ChecklistQuestion.day == day)
+        .where(ChecklistQuestion.employee_id == employee_id, on_day(day))
         .order_by(ChecklistQuestion.position, ChecklistQuestion.id)
     ))
+
+
+async def end_question(session, q: ChecklistQuestion) -> None:
+    """Savolni to'xtatadi. Hali bir marta ham yuborilmagan — butunlay o'chadi;
+    yuborilgan — tarix va bugun ochiq oynadagi hisob saqlanib, keyingi kundan to'xtaydi."""
+    last = logic.question_day() - timedelta(days=1)
+    if q.day > last:
+        q.is_active = False
+    else:
+        q.until_day = last
+    await session.flush()
 
 
 async def day_answers(session, employee_id: int, day: date) -> dict[int, ChecklistAnswer]:
@@ -114,9 +130,8 @@ async def penalty_rate(session) -> float:
 
 
 async def participants(session, day: date) -> list[Employee]:
-    """Shu kunga savol yozilgan, faol, Telegram'ga ulangan xodimlar."""
-    has_q = (select(ChecklistQuestion.employee_id)
-             .where(ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day == day))
+    """Shu kuni savoli bor, faol, Telegram'ga ulangan xodimlar."""
+    has_q = select(ChecklistQuestion.employee_id).where(on_day(day))
     return list(await session.scalars(
         select(Employee).where(Employee.is_active.is_(True), Employee.telegram_id.is_not(None),
                                Employee.id.in_(has_q)).order_by(Employee.full_name)

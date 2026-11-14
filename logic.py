@@ -76,15 +76,19 @@ def is_past_deadline(day: date, now: datetime | None = None) -> bool:
 
 
 def question_day(now: datetime | None = None) -> date:
-    """Yangi savol qaysi kuni yuboriladi: boshlanishgacha — bugun, keyin — ertaga.
-    Savollar doimiy emas: rahbar kun davomida yozadi, o'sha kuni bir marta ketadi."""
+    """Yangi (yoki tahrirlangan) savol qaysi kundan yuboriladi: boshlanishgacha —
+    bugundan, keyin — ertadan. Undan keyin har kuni takrorlanadi."""
     local = local_now(now)
     return local.date() if local.time() < WINDOW_START else local.date() + timedelta(days=1)
 
 
+def applies(start: date, until: date | None, day: date) -> bool:
+    """Savol shu kuni yuboriladimi (service.on_day'ning Python nusxasi)."""
+    return start <= day and (until is None or day <= until)
+
+
 def is_locked(day: date, now: datetime | None = None) -> bool:
-    """Savol yuborilgan (oyna ochilgan) — endi tahrirlab/o'chirib bo'lmaydi,
-    aks holda jarima hisobi o'zgarib qoladi."""
+    """Shu kunning oynasi ochilgan — savollar yuborilgan (tarixda ko'rinadi)."""
     return local_now(now) >= datetime.combine(day, WINDOW_START, TZ)
 
 

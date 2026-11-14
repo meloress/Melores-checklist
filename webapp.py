@@ -23,7 +23,7 @@ from db import (ChecklistAnswer, ChecklistDay, ChecklistQuestion, ChecklistSetti
 import jobs
 from jobs import send, sync_menus
 import logic
-from logic import (MONTHS, fmt_ball, fmt_day, is_locked, local_now, question_day,
+from logic import (MONTHS, applies, fmt_ball, fmt_day, is_locked, local_now, question_day,
                    reminder_times)
 import service
 
@@ -145,7 +145,7 @@ async def employees(request):
         emps = list(await session.scalars(q))
         counts = dict((await session.execute(
             select(ChecklistQuestion.employee_id, func.count())
-            .where(ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day == today)
+            .where(service.on_day(today))
             .group_by(ChecklistQuestion.employee_id))).all())
         answered = dict((await session.execute(
             select(ChecklistAnswer.employee_id, func.count())
@@ -200,16 +200,18 @@ async def day_answers(request):
     rows = []
     if is_locked(day, now):
         async with async_session() as session:
-            q = (select(ChecklistQuestion).where(ChecklistQuestion.day == day, ChecklistQuestion.is_active.is_(True))
-                 .order_by(ChecklistQuestion.position, ChecklistQuestion.id))
+            # Faqat shu kuni savol haqiqatan yuborilgan xodimlar (checklist_days qatori bor) —
+            # savollar har kuni takrorlanadi, yuborilmagan kun tarixda ko'rinmasin.
+            dq = select(ChecklistDay).where(ChecklistDay.day == day)
             if allowed is not None:
-                q = q.where(ChecklistQuestion.employee_id.in_(allowed))
-            questions = list(await session.scalars(q))
-            emp_ids = {x.employee_id for x in questions}
+                dq = dq.where(ChecklistDay.employee_id.in_(allowed))
+            day_rows = {r.employee_id: r for r in await session.scalars(dq)}
+            emp_ids = set(day_rows)
+            questions = list(await session.scalars(
+                select(ChecklistQuestion).where(service.on_day(day), ChecklistQuestion.employee_id.in_(emp_ids))
+                .order_by(ChecklistQuestion.position, ChecklistQuestion.id)))
             answers = {(a.employee_id, a.question_id): a for a in await session.scalars(
                 select(ChecklistAnswer).where(ChecklistAnswer.day == day, ChecklistAnswer.employee_id.in_(emp_ids)))}
-            day_rows = {r.employee_id: r for r in await session.scalars(
-                select(ChecklistDay).where(ChecklistDay.day == day, ChecklistDay.employee_id.in_(emp_ids)))}
             names = dict((await session.execute(
                 select(Employee.id, Employee.full_name).where(Employee.id.in_(emp_ids)))).all())
         for emp_id in sorted(emp_ids, key=lambda i: names.get(i, "")):
@@ -270,9 +272,11 @@ async def employee_detail(request):
         if emp is None:
             raise web.HTTPNotFound()
         questions = list(await session.scalars(
-            select(ChecklistQuestion).where(ChecklistQuestion.employee_id == emp_id,
-                                            ChecklistQuestion.is_active.is_(True), ChecklistQuestion.day >= since)
-            .order_by(ChecklistQuestion.day, ChecklistQuestion.position, ChecklistQuestion.id)))
+            select(ChecklistQuestion).where(
+                ChecklistQuestion.employee_id == emp_id, ChecklistQuestion.is_active.is_(True),
+                ChecklistQuestion.day <= target,
+                or_(ChecklistQuestion.until_day.is_(None), ChecklistQuestion.until_day >= since))
+            .order_by(ChecklistQuestion.position, ChecklistQuestion.id)))
         answers = {(a.day, a.question_id): a for a in await session.scalars(
             select(ChecklistAnswer).where(ChecklistAnswer.employee_id == emp_id, ChecklistAnswer.day >= since))}
         day_rows = {r.day: r for r in await session.scalars(
@@ -284,13 +288,14 @@ async def employee_detail(request):
             pay = await service.payment_day(session, emp)
             trello = {"checklist": cl, "other": other, "plus": plus, "total": round(plus - cl - other, 2),
                       "pay_day": fmt_day(pay) if pay else None}
-    by_day: dict = {}
-    for q in questions:
-        by_day.setdefault(q.day, []).append(q)
-    days = [_day_json(d, day_rows.get(d), by_day.get(d, []), lambda q, d=d: answers.get((d, q.id)))
-            for d in sorted(set(by_day) | set(day_rows), reverse=True)
-            if is_locked(d, now)]  # hali yuborilmagani "navbatdagi savollar"da
-    queued = [{"id": q.id, "text": q.text, "points": q.points, "readers": len(q.reader_ids or [])} for q in by_day.get(target, []) if not is_locked(q.day, now)]
+    def on(d):
+        return [q for q in questions if applies(q.day, q.until_day, d)]
+
+    # Tarix — faqat savol haqiqatan yuborilgan kunlar (checklist_days qatori bor).
+    days = [_day_json(d, day_rows[d], on(d), lambda q, d=d: answers.get((d, q.id)))
+            for d in sorted(day_rows, reverse=True) if is_locked(d, now)]
+    queued = [{"id": q.id, "text": q.text, "points": q.points, "readers": len(q.reader_ids or [])}
+              for q in on(target)]
     return web.json_response({
         "id": emp.id, "full_name": emp.full_name, "has_telegram": emp.telegram_id is not None,
         "started_bot": started, "target_label": _day_label(target, today), "queued": queued, "days": days,
@@ -401,8 +406,8 @@ async def trello_import(request):
 
 @routes.post("/api/questions")
 async def add_question(request):
-    """Bitta savol bir yoki bir nechta xodimga. Keyingi 19:00 ga yoziladi:
-    kunduzi — bugungi, kechqurun — ertangi."""
+    """Bitta savol bir yoki bir nechta xodimga. Keyingi 19:00 dan boshlab har kuni
+    yuboriladi (kunduzi yozilgani — bugundan, kechqurun — ertadan), o'chirilguncha."""
     data = await _body(request)
     text, points = _text(data), _points(data)
     ids = _ids(data, "employee_ids", allow_empty=False)
@@ -417,7 +422,7 @@ async def add_question(request):
             raise web.HTTPNotFound()
         last = dict((await session.execute(
             select(ChecklistQuestion.employee_id, func.max(ChecklistQuestion.position))
-            .where(ChecklistQuestion.employee_id.in_(valid), ChecklistQuestion.day == day)
+            .where(ChecklistQuestion.employee_id.in_(valid), service.on_day(day))
             .group_by(ChecklistQuestion.employee_id))).all())
         session.add_all(ChecklistQuestion(employee_id=e, day=day, text=text, position=(last.get(e) or 0) + 1,
                                           points=points, reader_ids=readers)
@@ -428,43 +433,54 @@ async def add_question(request):
 
 
 async def _own_question(request, session) -> ChecklistQuestion:
-    """Tahrirlanadigan savol: o'z xodimiga tegishli va hali YUBORILMAGAN —
-    yuborilgandan keyin o'zgartirish jarima hisobini buzadi."""
+    """O'z xodimiga tegishli, hali davom etayotgan (to'xtatilmagan) savol."""
     q = await session.get(ChecklistQuestion, int(request.match_info["id"]))
-    if q is None or not q.is_active:
+    if q is None or not q.is_active or q.until_day is not None:
         raise web.HTTPNotFound()
     _in_scope(request, q.employee_id)
-    if is_locked(q.day):
-        raise web.HTTPConflict(text='{"error":"question_sent"}', content_type="application/json")
     return q
 
 
 @routes.put("/api/questions/{id:\\d+}")
 async def edit_question(request):
+    """Hali yuborilmagan savol joyida o'zgaradi. Yuborilgani esa eskisi to'xtatilib,
+    yangisi navbatdagi kundan boshlanadi — o'tgan kunlar tarixi va bugungi
+    ochiq oynadagi jarima hisobi o'zgarmaydi."""
     data = await _body(request)
     text = _text(data)
+    start = question_day()
     async with async_session() as session:
         q = await _own_question(request, session)
-        q.text, q.points = text, _points(data, q.points)
+        points = _points(data, q.points)
+        if q.day >= start:
+            q.text, q.points = text, points
+        else:
+            await service.end_question(session, q)
+            q = ChecklistQuestion(employee_id=q.employee_id, day=start, text=text, points=points,
+                                  position=q.position, reader_ids=list(q.reader_ids or []))
+            session.add(q)
         await session.commit()
     return web.json_response({"id": q.id, "text": q.text, "points": q.points})
 
 
 @routes.delete("/api/questions/{id:\\d+}")
 async def delete_question(request):
+    """Keyingi kundan boshlab yuborilmaydi (bugun ochiq oynadagisi hisobda qoladi)."""
     async with async_session() as session:
         q = await _own_question(request, session)
-        q.is_active = False
+        await service.end_question(session, q)
         await session.commit()
     return web.json_response({"ok": True})
 
 
 @routes.post("/api/questions/{id:\\d+}/up")
 async def move_question_up(request):
-    """Savolni bitta yuqoriga suradi (yuborilmagan savollar ichida)."""
+    """Savolni bitta yuqoriga suradi (xodimning har kungi ro'yxatida)."""
     async with async_session() as session:
         q = await _own_question(request, session)
-        qs = await service.day_questions(session, q.employee_id, q.day)
+        qs = await service.day_questions(session, q.employee_id, question_day())
+        if q not in qs:
+            raise web.HTTPNotFound()
         i = qs.index(q)
         if i > 0:
             qs[i - 1], qs[i] = qs[i], qs[i - 1]
