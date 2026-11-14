@@ -170,8 +170,9 @@ async def close_day(bot: Bot, day: date) -> None:
 
         if not blocks:
             return
-        # Admin va rahbarlar — hamma xodimning yig'masi.
+        # Admin, rahbar va nazoratchi — hamma xodimning yig'masi (to'liq huquq, 2026-11-14).
         leaders = await service.leader_ids(session)
+        leaders |= set(await session.scalars(select(ChecklistViewer.viewer_id)))
         admins = list(await session.scalars(select(Employee).where(
             or_(Employee.role == service.ADMIN, Employee.id.in_(leaders)),
             Employee.is_active.is_(True), Employee.telegram_id.is_not(None))))

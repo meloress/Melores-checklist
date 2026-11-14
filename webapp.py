@@ -1,7 +1,7 @@
 """Mini App: boshliq (admin) va nazoratchilar uchun boshqaruv paneli.
 
-Huquq: admin — hamma xodim + nazoratchilar + sozlama; nazoratchi — faqat
-admin unga biriktirgan xodimlar (savollarini tahrirlaydi, javoblarini ko'radi).
+Huquq: admin, rahbar va nazoratchi — bir xil, to'liq (2026-11-14, user):
+hamma xodim, tahrirlash, sozlama, jarimani bekor qilish, rahbar/nazoratchi tayinlash.
 Boshqa xodimlarga 403."""
 
 import asyncio
@@ -80,18 +80,6 @@ def _in_scope(request, employee_id: int) -> None:
         raise web.HTTPForbidden(text='{"error":"forbidden"}', content_type="application/json")
 
 
-def _no_admin_grant(request, role: str) -> None:
-    """Xodim qo'shishni rahbar/nazoratchi ham qiladi (2026-11-14, user), lekin admin
-    huquqini faqat admin beradi."""
-    if role == service.ADMIN and request["me"].role != service.ADMIN:
-        raise web.HTTPForbidden(text='{"error":"admin_only"}', content_type="application/json")
-
-
-def _require_admin(request) -> None:
-    if request["me"].role != service.ADMIN:
-        raise web.HTTPForbidden(text='{"error":"admin_only"}', content_type="application/json")
-
-
 async def _body(request) -> dict:
     try:
         data = await request.json()
@@ -131,12 +119,19 @@ def _text(data: dict) -> str:
 routes = web.RouteTableDef()
 
 
+async def _leaders() -> set[int]:
+    async with async_session() as session:
+        return await service.leader_ids(session)
+
+
 @routes.get("/api/me")
 async def me(request):
     m = request["me"]
     return web.json_response({"id": m.id, "full_name": m.full_name, "role": m.role,
-                              "is_admin": m.role == service.ADMIN,
-                              "is_leader": m.role != service.ADMIN and request["scope"] is None, "start": logic.START_TXT, "deadline": logic.DEADLINE_TXT, "points": list(logic.POINTS),
+                              # Panelga kirgan har kim — admin huquqida (2026-11-14); unvon faqat Profil uchun.
+                              "is_admin": True,
+                              "panel_role": "admin" if m.role == service.ADMIN else
+                              "rahbar" if m.id in await _leaders() else "nazoratchi", "start": logic.START_TXT, "deadline": logic.DEADLINE_TXT, "points": list(logic.POINTS),
                               "bot_username": request.config_dict.get("bot_username", ""),
                               "reminders": [t.strftime("%H:%M") for t in reminder_times()[1:]]})
 
@@ -308,7 +303,7 @@ async def employee_detail(request):
         "started_bot": started, "target_label": _day_label(target, today), "queued": queued, "days": days,
         "role": emp.role, "trello": trello, "linked": emp.trello_employee_id is not None,
         # Telefon — faqat admin (xodim qo'shish/tahrirlash faqat unda).
-        "phone": emp.phone if request["me"].role == service.ADMIN else None,
+        "phone": emp.phone,
     })
 
 
@@ -334,7 +329,6 @@ async def add_employee(request):
     nazoratchi (yangisi hamma nazoratchiga biriktiriladi — qo'shgan odam ham ko'radi).
     Xodim botda /start bosib, shu telefonni ulashganda Telegram'iga bog'lanadi."""
     name, phone, role = _employee_fields(await _body(request))
-    _no_admin_grant(request, role)
     async with async_session() as session:
         if await service.employee_by_phone(session, phone):
             raise web.HTTPConflict(text='{"error":"phone_taken"}', content_type="application/json")
@@ -350,14 +344,13 @@ async def add_employee(request):
 @routes.put("/api/employees/{id:\\d+}")
 async def edit_employee(request):
     """Ism/telefon/rol/faollik — faqat checklist'dagi yozuv (Trello'dagi o'zgarmaydi). Faqat admin."""
-    _require_admin(request)
     data = await _body(request)
     name, phone, role = _employee_fields(data)
     active = data.get("is_active", True)
     if not isinstance(active, bool):
         raise _bad("bad_json")
     emp_id = int(request.match_info["id"])
-    if emp_id == request["me"].id and (role != service.ADMIN or not active):
+    if emp_id == request["me"].id and (role != request["me"].role or not active):
         raise web.HTTPConflict(text='{"error":"self_demote"}', content_type="application/json")
     async with async_session() as session:
         emp = await session.get(Employee, emp_id)
@@ -378,11 +371,9 @@ async def edit_employee(request):
 async def trello_candidates(request):
     """Trello'dagi faol, checklist'da hali yo'q xodimlar (keraklilari import qilinadi).
     Admin bo'lmagan — Trello'dagi adminlarni ko'rmaydi (admin huquqini faqat admin beradi)."""
-    no_admins = request["me"].role != service.ADMIN
     async with async_session() as session:
         rows = list(await session.scalars(
             select(TrelloEmployee).where(TrelloEmployee.is_active.is_(True),
-                                         *([TrelloEmployee.role != service.ADMIN] if no_admins else []),
                                          TrelloEmployee.id.not_in(select(Employee.trello_employee_id).where(
                                              Employee.trello_employee_id.is_not(None))))
             .order_by(TrelloEmployee.full_name)))
@@ -399,7 +390,7 @@ async def trello_import(request):
         tg_taken = set(await session.scalars(select(Employee.telegram_id).where(Employee.telegram_id.is_not(None))))
         for t in await session.scalars(select(TrelloEmployee).where(TrelloEmployee.id.in_(ids),
                                                                    TrelloEmployee.is_active.is_(True))):
-            if t.id in taken or (t.role == service.ADMIN and request["me"].role != service.ADMIN):
+            if t.id in taken:
                 continue
             new.append(Employee(trello_employee_id=t.id, full_name=t.full_name, phone=t.phone_number,
                                 role=t.role if t.role in ROLES else "worker",
@@ -503,7 +494,6 @@ async def move_question_up(request):
 async def cancel_penalty(request):
     """Noto'g'ri jarimani bekor qilish (kasallik, texnik nosozlik). Pul masalasi —
     faqat admin. kpi_logs'dan o'chiriladi, oylik kuni qayta hisoblanadi, xodimga xabar."""
-    _require_admin(request)
     me_ = request["me"]
     async with async_session() as session:
         row = await session.get(ChecklistDay, int(request.match_info["id"]))
@@ -569,7 +559,6 @@ async def set_viewer(request):
         target = await session.get(Employee, viewer_id)
         if target is None:
             raise web.HTTPNotFound()
-        _no_admin_grant(request, target.role)
         valid = set(await session.scalars(select(Employee.id).where(Employee.id.in_(ids))))
         mine = delete(ChecklistViewer).where(ChecklistViewer.viewer_id == viewer_id)
         if allowed is not None:
@@ -584,7 +573,6 @@ async def set_viewer(request):
 @routes.put("/api/leaders/{id:\\d+}")
 async def set_leader(request):
     """Rahbar qilish / olib tashlash: {"on": true|false}. Faqat admin."""
-    _require_admin(request)
     emp_id = int(request.match_info["id"])
     on = (await _body(request)).get("on")
     if not isinstance(on, bool):
@@ -625,7 +613,6 @@ def _bad(key: str):
 
 @routes.get("/api/settings")
 async def get_settings(request):
-    _require_admin(request)
     async with async_session() as session:
         return web.json_response(_settings_json(await session.get(ChecklistSettings, 1)))
 
@@ -633,7 +620,6 @@ async def get_settings(request):
 @routes.put("/api/settings")
 async def put_settings(request):
     """Hamma sozlama bitta formadan; yuborilmagan maydon o'zgarmaydi."""
-    _require_admin(request)
     data = await _body(request)
     async with async_session() as session:
         s = await session.get(ChecklistSettings, 1)

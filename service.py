@@ -159,11 +159,12 @@ async def leader_ids(session) -> set[int]:
 
 
 async def scope(session, employee: Employee) -> set[int] | None:
-    """Mini App huquqi: None = hammasi (admin, rahbar), to'plam = faqat shu
-    xodimlar (nazoratchi), bo'sh to'plam = ruxsat yo'q (Mini App ham ko'rinmaydi)."""
+    """Mini App huquqi: None = hammasi, bo'sh to'plam = ruxsat yo'q (Mini App ham
+    ko'rinmaydi). Admin, rahbar va nazoratchi — bir xil to'liq huquq (2026-11-14, user:
+    "adminnikidek, hech narsa qolmasin"); nazoratchi = kamida bitta xodim biriktirilgan."""
     if employee.role == ADMIN or employee.id in await leader_ids(session):
         return None
-    return await viewer_ids_of(session, employee.id)
+    return None if await viewer_ids_of(session, employee.id) else set()
 
 
 async def panel_chats(session) -> list[tuple[int, bool]]:

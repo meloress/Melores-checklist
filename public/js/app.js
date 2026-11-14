@@ -743,7 +743,7 @@ async function screenViewers() {
   setScreen(`
     ${state.me.is_admin ? `
     <p class="page-title">Rahbarlar (${data.leaders.length})</p>
-    <p class="page-sub">Rahbar hamma xodimni ko'radi, savol yozadi va ${state.me.deadline} da to'liq yig'ma oladi. Sozlama, jarimani bekor qilish, rahbar tayinlash — faqat adminda.</p>
+    <p class="page-sub">Rahbar hamma xodimni ko'radi, savol yozadi va ${state.me.deadline} da to'liq yig'ma oladi. Rahbar va nazoratchi ham admin bilan bir xil to'liq huquqqa ega.</p>
     ${data.leaders.map((l) => `
       <div class="fin-card">
         <div class="top"><span class="task">${esc(l.full_name)}</span></div>
@@ -751,7 +751,7 @@ async function screenViewers() {
       </div>`).join("")}
     <button class="nav-card" id="add-leader"><span class="ic">${icon("users")}</span><span class="grow">Rahbar qo'shish</span><span class="chev">›</span></button>` : ""}
     <p class="page-title" ${state.me.is_admin ? `style="margin-top:18px"` : ""}>Nazoratchilar (${data.viewers.length})</p>
-    <p class="page-sub">Nazoratchi faqat o'ziga biriktirilgan xodimlarning javoblarini ko'radi, savollarini tahrirlaydi va har kuni ${state.me.deadline} da yig'ma oladi. Admin hammasini ko'radi.</p>
+    <p class="page-sub">Nazoratchi admin bilan bir xil to'liq huquqqa ega: hamma xodimni ko'radi va har kuni ${state.me.deadline} da to'liq yig'ma oladi. Kamida bitta xodim belgilangan odam nazoratchi hisoblanadi.</p>
     ${data.viewers.length ? data.viewers.map((v, i) => `
       <button class="emp-row" data-i="${i}">
         <span class="dot-status on"></span>
@@ -852,7 +852,7 @@ async function screenProfile() {
     <div class="profile-head">
       <div class="avatar-circle">${esc(initials)}</div>
       <p class="greet" style="margin:2px 0 0">${esc(me.full_name)}</p>
-      <p class="greet-wave" style="margin:0">${esc(ROLE_LABELS[me.role] || me.role)}${me.is_admin ? "" : me.is_leader ? " · rahbar" : " · nazoratchi"}</p>
+      <p class="greet-wave" style="margin:0">${esc(ROLE_LABELS[me.role] || me.role)}${me.panel_role && me.panel_role !== "admin" ? ` · ${me.panel_role}` : ""}</p>
     </div>
     <div class="panel">
       <div class="kv-row"><span class="k">Savollar keladi</span><span class="v">${state.me.start}</span></div>
