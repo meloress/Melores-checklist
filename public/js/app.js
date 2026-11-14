@@ -55,7 +55,8 @@ function tabDefs() {
     { key: "home", icon: icon("home"), label: "Bosh sahifa", screen: screenHome },
     { key: "employees", icon: icon("users"), label: "Xodimlar", screen: screenEmployees },
   ];
-  if (state.me.is_admin) tabs.push({ key: "viewers", icon: icon("chart"), label: "Rahbarlar", screen: screenViewers });
+  // Nazoratchi qo'shishni rahbar/nazoratchi ham qiladi; rahbar tayinlash — faqat admin.
+  tabs.push({ key: "viewers", icon: icon("chart"), label: state.me.is_admin ? "Rahbarlar" : "Nazoratchilar", screen: screenViewers });
   tabs.push({ key: "profile", icon: icon("user"), label: "Profil", screen: screenProfile });
   return tabs;
 }
@@ -342,9 +343,8 @@ async function screenEmployees() {
   const roles = Object.keys(ROLE_LABELS).filter((r) => employees.some((e) => e.role === r));
   setScreen(`
     <p class="page-title">Xodimlar (${employees.length})</p>
-    ${state.me.is_admin ? `
-      <button class="nav-card" id="nav-add"><span class="ic">${icon("user")}</span><span class="grow">Xodim qo'shish</span><span class="chev">›</span></button>
-      <button class="nav-card" id="nav-import"><span class="ic">${icon("users")}</span><span class="grow">Trello botdan import</span><span class="chev">›</span></button>` : ""}
+    <button class="nav-card" id="nav-add"><span class="ic">${icon("user")}</span><span class="grow">Xodim qo'shish</span><span class="chev">›</span></button>
+    <button class="nav-card" id="nav-import"><span class="ic">${icon("users")}</span><span class="grow">Trello botdan import</span><span class="chev">›</span></button>
     <button class="nav-card accent" id="nav-all"><span class="ic">${icon("list")}</span><span class="grow">Hammasi · qidirish</span><span class="chev">›</span></button>
     ${roles.map((r) => `
         <button class="nav-card" data-role="${r}">
@@ -353,10 +353,8 @@ async function screenEmployees() {
       `).join("")}
   `);
   root.querySelector("#nav-all").onclick = () => show(screenEmployeeList, "Barcha xodimlar", "all");
-  if (state.me.is_admin) {
-    root.querySelector("#nav-add").onclick = () => show(screenEmployeeForm, null);
-    root.querySelector("#nav-import").onclick = () => show(screenTrelloImport);
-  }
+  root.querySelector("#nav-add").onclick = () => show(screenEmployeeForm, null);
+  root.querySelector("#nav-import").onclick = () => show(screenTrelloImport);
   root.querySelectorAll(".nav-card[data-role]").forEach((el) => {
     el.onclick = () => show(screenEmployeeList, ROLE_LABELS[el.dataset.role], el.dataset.role);
   });
@@ -541,7 +539,7 @@ async function screenEmployeeForm(emp) {
     <p class="page-title">${emp ? "Xodimni tahrirlash" : "Yangi xodim"}</p>
     <div class="field"><label>Ism familiya</label><input id="f-name" maxlength="150" value="${esc(emp ? emp.full_name : "")}" /></div>
     <div class="field"><label>Telefon</label><input id="f-phone" type="tel" maxlength="20" placeholder="+998 90 123 45 67" value="${esc(emp && emp.phone ? emp.phone : "")}" /></div>
-    <div class="field"><label>Rol</label><select id="f-role">${Object.keys(ROLE_LABELS).map((r) =>
+    <div class="field"><label>Rol</label><select id="f-role">${Object.keys(ROLE_LABELS).filter((r) => r !== "admin" || state.me.is_admin).map((r) =>
       `<option value="${r}" ${(emp ? emp.role : "worker") === r ? "selected" : ""}>${esc(ROLE_LABELS[r])}</option>`).join("")}</select></div>
     ${emp ? `<label class="check-row"><input type="checkbox" id="f-active" checked /><span class="grow">Faol <span class="hint">— belgini olsangiz, ro'yxatdan chiqadi va savol bormaydi</span></span></label>` : ""}
     <p class="hint">${emp && emp.linked ? "Trello botdagi yozuvi o'zgarmaydi — faqat checklist'dagisi." : "Faqat checklist botga qo'shiladi, Trello botga tushmaydi."}
@@ -743,15 +741,16 @@ async function screenViewers() {
   loading();
   const data = await api("/viewers");
   setScreen(`
+    ${state.me.is_admin ? `
     <p class="page-title">Rahbarlar (${data.leaders.length})</p>
-    <p class="page-sub">Rahbar hamma xodimni ko'radi, savol yozadi va ${state.me.deadline} da to'liq yig'ma oladi. Sozlama, jarimani bekor qilish, rahbar/nazoratchi tayinlash — faqat adminda.</p>
+    <p class="page-sub">Rahbar hamma xodimni ko'radi, savol yozadi va ${state.me.deadline} da to'liq yig'ma oladi. Sozlama, jarimani bekor qilish, rahbar tayinlash — faqat adminda.</p>
     ${data.leaders.map((l) => `
       <div class="fin-card">
         <div class="top"><span class="task">${esc(l.full_name)}</span></div>
         <div class="member-actions"><button data-unlead="${l.id}">Rahbarlikdan olish</button></div>
       </div>`).join("")}
-    <button class="nav-card" id="add-leader"><span class="ic">${icon("users")}</span><span class="grow">Rahbar qo'shish</span><span class="chev">›</span></button>
-    <p class="page-title" style="margin-top:18px">Nazoratchilar (${data.viewers.length})</p>
+    <button class="nav-card" id="add-leader"><span class="ic">${icon("users")}</span><span class="grow">Rahbar qo'shish</span><span class="chev">›</span></button>` : ""}
+    <p class="page-title" ${state.me.is_admin ? `style="margin-top:18px"` : ""}>Nazoratchilar (${data.viewers.length})</p>
     <p class="page-sub">Nazoratchi faqat o'ziga biriktirilgan xodimlarning javoblarini ko'radi, savollarini tahrirlaydi va har kuni ${state.me.deadline} da yig'ma oladi. Admin hammasini ko'radi.</p>
     ${data.viewers.length ? data.viewers.map((v, i) => `
       <button class="emp-row" data-i="${i}">
@@ -764,7 +763,8 @@ async function screenViewers() {
   root.querySelectorAll(".emp-row").forEach((el) => {
     el.onclick = () => show(screenViewerEdit, data.viewers[Number(el.dataset.i)].id);
   });
-  root.querySelector("#add-leader").onclick = () => show(screenViewerPick, true);
+  const addLeader = root.querySelector("#add-leader");
+  if (addLeader) addLeader.onclick = () => show(screenViewerPick, true);
   root.querySelectorAll("[data-unlead]").forEach((btn) => {
     btn.onclick = async () => {
       if (!(await confirmAction("Rahbarlikdan olinsinmi? Panel unga endi ko'rinmaydi."))) return;

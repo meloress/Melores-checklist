@@ -80,6 +80,13 @@ def _in_scope(request, employee_id: int) -> None:
         raise web.HTTPForbidden(text='{"error":"forbidden"}', content_type="application/json")
 
 
+def _no_admin_grant(request, role: str) -> None:
+    """Xodim qo'shishni rahbar/nazoratchi ham qiladi (2026-11-14, user), lekin admin
+    huquqini faqat admin beradi."""
+    if role == service.ADMIN and request["me"].role != service.ADMIN:
+        raise web.HTTPForbidden(text='{"error":"admin_only"}', content_type="application/json")
+
+
 def _require_admin(request) -> None:
     if request["me"].role != service.ADMIN:
         raise web.HTTPForbidden(text='{"error":"admin_only"}', content_type="application/json")
@@ -323,10 +330,11 @@ def _employee_fields(data: dict) -> tuple[str, str, str]:
 
 @routes.post("/api/employees")
 async def add_employee(request):
-    """Yangi xodim — faqat checklist'da (Trello botga tushmaydi). Faqat admin.
+    """Yangi xodim — faqat checklist'da (Trello botga tushmaydi). Admin, rahbar va
+    nazoratchi (yangisi hamma nazoratchiga biriktiriladi — qo'shgan odam ham ko'radi).
     Xodim botda /start bosib, shu telefonni ulashganda Telegram'iga bog'lanadi."""
-    _require_admin(request)
     name, phone, role = _employee_fields(await _body(request))
+    _no_admin_grant(request, role)
     async with async_session() as session:
         if await service.employee_by_phone(session, phone):
             raise web.HTTPConflict(text='{"error":"phone_taken"}', content_type="application/json")
@@ -335,7 +343,7 @@ async def add_employee(request):
         await session.flush()
         await service.attach_to_viewers(session, [emp.id])
         await session.commit()
-    logger.info("checklist xodim qo'shildi: %s (admin %s)", emp.id, request["me"].id)
+    logger.info("checklist xodim qo'shildi: %s (qo'shgan %s)", emp.id, request["me"].id)
     return web.json_response({"id": emp.id})
 
 
@@ -368,11 +376,13 @@ async def edit_employee(request):
 
 @routes.get("/api/trello-import")
 async def trello_candidates(request):
-    """Trello'dagi faol, checklist'da hali yo'q xodimlar (admin keraklilarini import qiladi)."""
-    _require_admin(request)
+    """Trello'dagi faol, checklist'da hali yo'q xodimlar (keraklilari import qilinadi).
+    Admin bo'lmagan — Trello'dagi adminlarni ko'rmaydi (admin huquqini faqat admin beradi)."""
+    no_admins = request["me"].role != service.ADMIN
     async with async_session() as session:
         rows = list(await session.scalars(
             select(TrelloEmployee).where(TrelloEmployee.is_active.is_(True),
+                                         *([TrelloEmployee.role != service.ADMIN] if no_admins else []),
                                          TrelloEmployee.id.not_in(select(Employee.trello_employee_id).where(
                                              Employee.trello_employee_id.is_not(None))))
             .order_by(TrelloEmployee.full_name)))
@@ -381,7 +391,6 @@ async def trello_candidates(request):
 
 @routes.post("/api/trello-import")
 async def trello_import(request):
-    _require_admin(request)
     ids = _ids(await _body(request), "trello_ids", allow_empty=False)
     new = []
     async with async_session() as session:
@@ -390,7 +399,7 @@ async def trello_import(request):
         tg_taken = set(await session.scalars(select(Employee.telegram_id).where(Employee.telegram_id.is_not(None))))
         for t in await session.scalars(select(TrelloEmployee).where(TrelloEmployee.id.in_(ids),
                                                                    TrelloEmployee.is_active.is_(True))):
-            if t.id in taken:
+            if t.id in taken or (t.role == service.ADMIN and request["me"].role != service.ADMIN):
                 continue
             new.append(Employee(trello_employee_id=t.id, full_name=t.full_name, phone=t.phone_number,
                                 role=t.role if t.role in ROLES else "worker",
@@ -399,7 +408,7 @@ async def trello_import(request):
         await session.flush()
         await service.attach_to_viewers(session, [e.id for e in new])
         await session.commit()
-    logger.info("checklist: Trello'dan %s xodim import qilindi (admin %s)", len(new), request["me"].id)
+    logger.info("checklist: Trello'dan %s xodim import qilindi (qo'shgan %s)", len(new), request["me"].id)
     _refresh_menus(request)
     return web.json_response({"count": len(new)})
 
@@ -520,12 +529,17 @@ async def cancel_penalty(request):
 
 @routes.get("/api/viewers")
 async def viewers(request):
-    _require_admin(request)
+    """Nazoratchilar. Admin/rahbar — hammasi; nazoratchi — faqat o'zi ko'radigan
+    xodimlar doirasida (2026-11-14, user: nazoratchi qo'shishni ular ham qiladi)."""
+    allowed = request["scope"]
     async with async_session() as session:
         rows = (await session.execute(select(ChecklistViewer.viewer_id, ChecklistViewer.employee_id))).all()
         emps = list(await session.scalars(
             select(Employee).where(Employee.is_active.is_(True)).order_by(Employee.full_name)))
         leaders = await service.leader_ids(session)
+    if allowed is not None:
+        emps = [e for e in emps if e.id in allowed]
+        rows = [(v, e) for v, e in rows if v in allowed and e in allowed]
     by_viewer: dict[int, list[int]] = {}
     for v, e in rows:
         by_viewer.setdefault(v, []).append(e)
@@ -541,17 +555,26 @@ async def viewers(request):
 
 @routes.put("/api/viewers/{id:\\d+}")
 async def set_viewer(request):
-    """Nazoratchining ko'radigan xodimlari ro'yxatini to'liq almashtiradi (bo'sh = olib tashlash)."""
-    _require_admin(request)
+    """Nazoratchining ko'radigan xodimlari ro'yxatini to'liq almashtiradi (bo'sh = olib tashlash).
+    Nazoratchi buni faqat o'z doirasida qiladi: o'zi ko'rmaydigan xodimlarga tegmaydi."""
+    allowed = request["scope"]
     viewer_id = int(request.match_info["id"])
+    _in_scope(request, viewer_id)
     ids = (await _body(request)).get("employee_ids", [])
     if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
         raise web.HTTPBadRequest(text='{"error":"employee_ids"}', content_type="application/json")
+    for i in ids:
+        _in_scope(request, i)
     async with async_session() as session:
-        if await session.get(Employee, viewer_id) is None:
+        target = await session.get(Employee, viewer_id)
+        if target is None:
             raise web.HTTPNotFound()
+        _no_admin_grant(request, target.role)
         valid = set(await session.scalars(select(Employee.id).where(Employee.id.in_(ids))))
-        await session.execute(delete(ChecklistViewer).where(ChecklistViewer.viewer_id == viewer_id))
+        mine = delete(ChecklistViewer).where(ChecklistViewer.viewer_id == viewer_id)
+        if allowed is not None:
+            mine = mine.where(ChecklistViewer.employee_id.in_(allowed))
+        await session.execute(mine)
         session.add_all(ChecklistViewer(viewer_id=viewer_id, employee_id=e) for e in valid if e != viewer_id)
         await session.commit()
     _refresh_menus(request)
